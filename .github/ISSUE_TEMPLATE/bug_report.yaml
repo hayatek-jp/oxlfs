@@ -1,0 +1,71 @@
+name: Bug Report
+description: Create a report to help me improve
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        I appreciate your taking the time to improve this project.
+
+  - type: input
+    attributes:
+      label: Summary
+      description: Please give a brief summary of the report.
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Steps to reproduce the bug
+      description: Please describe the steps to reproduce the bug in as much detail as possible.
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Desired result
+      description: What is the result of the code above if the bug does not occur?
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Actual result
+      description: What are the consequences of the above code due to the bug?
+    validations:
+      required: true
+
+  - type: input
+    attributes:
+      label: Bug reproducibility
+      description: Calculate the reproducibility of the bug and enter it as a percentage.
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: System information
+      description: OS name, version, kernel version
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Additional information
+      description: Please write if you have anything else to say.
+    validations:
+      required: false
+
+  - type: checkboxes
+    attributes:
+      label: Checklist
+      description: This is the final confirmation of the report.
+      options:
+        - label: I follow the contribution guidelines.
+          required: true
+        - label: I confirmed that there is no similar issue.
+          required: true
+        - label: I have checked that this issue does not contain any credentials or personal information.
+          required: true
+

@@ -1,0 +1,23 @@
+version: 2
+updates:
+  - package-ecosystem: 'github-actions'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+    assignees:
+      - 'hayatek-jp'
+    open-pull-requests-limit: 10
+    reviewers:
+      - 'hayatek-jp'
+    target-branch: 'main'
+
+  - package-ecosystem: 'cargo'
+    directory: '/'
+    schedule:
+      interval: 'daily'
+    assignees:
+      - 'hayatek-jp'
+    open-pull-requests-limit: 10
+    reviewers:
+      - 'hayatek-jp'
+    target-branch: 'main'

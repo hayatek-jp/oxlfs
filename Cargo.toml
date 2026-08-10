@@ -1,0 +1,28 @@
+[package]
+name = "oxlfs"
+version = "0.1.0"
+authors = [
+    "KATO Hayate <dev@hayatek.jp>"
+]
+edition = "2024"
+#rust-version = ""
+description = "Git LFS server"
+#documentation = ""
+readme = "README.md"
+homepage = "https://github.com/hayatek-jp/oxlfs#readme"
+repository = "https://github.com/hayatek-jp/oxlfs"
+license = "AGPL-3.0-only"
+keywords = [
+    "git",
+    "lfs",
+]
+categories = [
+    "filesystem",
+    "network-programming",
+    "web-programming::http-server",
+]
+#exclude = []
+#include = []
+publish = false
+
+[dependencies]

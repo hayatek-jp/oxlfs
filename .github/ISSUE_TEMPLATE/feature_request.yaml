@@ -1,0 +1,59 @@
+name: Feature Request
+description: Suggest an idea for this project
+title: "[Request]: "
+labels: ["feature", "triage"]
+body:
+  - type: input
+    attributes:
+      label: Summary
+      description: Please summarize your request in one sentence.
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Request details
+      description: Please describe your request in as much detail as possible.
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Reason for request
+      description: Please describe in as much detail as possible why you made this request.
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Current situation
+      description: What problems are you currently experiencing?
+    validations:
+      required: false
+
+  - type: textarea
+    attributes:
+      label: Problem with request
+      description: What problems can this request cause?
+    validations:
+      required: false
+
+  - type: textarea
+    attributes:
+      label: Additional information
+      description: Please write if you have anything else to say.
+    validations:
+      required: false
+
+  - type: checkboxes
+    attributes:
+      label: Checklist
+      description: This is the final confirmation of the report.
+      options:
+        - label: I follow the contribution guidelines.
+          required: true
+        - label: I confirmed that there is no similar issue.
+          required: true
+        - label: I have checked that this issue does not contain any credentials or personal information.
+          required: true
+

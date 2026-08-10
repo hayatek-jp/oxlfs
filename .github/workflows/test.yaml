@@ -1,0 +1,32 @@
+name: Test
+
+on:
+  push:
+    paths-ignore:
+      - '.git**'
+      - '**.md'
+      - 'LICENSE'
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Cache Cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            '~/.cargo'
+            './target'
+          key: cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run test
+        run: |
+          cargo test --all-features --workspace
