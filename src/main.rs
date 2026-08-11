@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // SPDX-FileCopyrightText: 2026 KATO Hayate <dev@hayatek.jp>
 
+mod batch;
 mod config;
 
-use std::net::{IpAddr, Ipv4Addr};
 use std::path::Path;
 
 use anyhow::Result;
 use axum;
 use axum::Router;
-use axum::routing::get;
+use axum::routing::{get, post};
 use clap::{ArgMatches, Command, arg};
 use tokio;
-use tokio::net::{TcpListener, TcpSocket};
+use tokio::net::TcpListener;
 use tokio::signal;
 use tracing::{Level, debug, error, info, warn};
 use tracing_subscriber;
@@ -33,7 +33,7 @@ async fn shutdown_signal() {
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_max_level(Level::DEBUG)
+        .with_max_level(Level::TRACE)
         .init();
 
     let matches: ArgMatches = Command::new("OxLFS")
@@ -64,7 +64,15 @@ async fn main() -> Result<()> {
     debug!("Configuration parameters: {:?}", config);
 
     info!("Starting server...");
-    let mut app: Router = Router::new();
+    let git_root: &str = config.git_root.as_deref().unwrap_or("").trim_matches('/');
+    let lfs_endpoint: String = if git_root.is_empty() {
+        "/{user}/{repo}/info/lfs".to_owned()
+    } else {
+        format!("/{git_root}/{{user}}/{{repo}}/info/lfs")
+    };
+    debug!("LFS endpoint: {}", lfs_endpoint);
+    let batch_endpoint: String = lfs_endpoint.clone() + "/objects/batch";
+    let mut app: Router = Router::new().route(&batch_endpoint, post(batch::handle));
     if config.healthcheck_endpoint.unwrap_or(true) {
         app = app.route("/", get(|| async { "OxLFS is running!" }));
     }
