@@ -28,7 +28,10 @@ publish = false
 [dependencies]
 anyhow = "1.0.104"
 axum = { version = "0.8.9", features = ["http2"] }
+clap = "4.6.6"
+serde = { version = "1.0.229", features = ["derive"] }
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "net", "fs", "time", "sync", "signal", "process", "tracing"] }
+toml = "1.1.4"
 tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-subscriber = "0.3.23"
