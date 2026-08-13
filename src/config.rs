@@ -37,6 +37,8 @@ pub(crate) struct Config {
     pub(crate) log_dir: String,
     /// Whether to enable health check endpoint (`/`)
     pub(crate) healthcheck_endpoint: Option<bool>,
+    /// JWT secret
+    pub(crate) jwt_secret: String,
 }
 
 impl Config {

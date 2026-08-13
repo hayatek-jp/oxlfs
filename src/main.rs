@@ -3,8 +3,11 @@
 
 mod batch;
 mod config;
+mod jwt;
+mod upload;
 
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::Result;
 use axum;
@@ -12,6 +15,7 @@ use axum::Router;
 use axum::routing::{get, post};
 use clap::{ArgMatches, Command, arg};
 use tokio;
+use tokio::fs::create_dir_all;
 use tokio::net::TcpListener;
 use tokio::signal;
 use tracing::{Level, debug, error, info, warn};
@@ -20,6 +24,12 @@ use tracing_subscriber;
 use config::Config;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+#[derive(Clone)]
+pub(crate) struct AppState {
+    pub config: Arc<Config>,
+    pub lfs_endpoint: String,
+}
 
 /// Shutdown signal handler.
 async fn shutdown_signal() {
@@ -59,11 +69,13 @@ async fn main() -> Result<()> {
 
     info!("Loading configuration...");
     debug!("Configuration file path: {:?}", config_path);
-    let config: Config = Config::load(config_path).await?;
+    let config: Arc<Config> = Arc::new(Config::load(config_path).await?);
     info!("Configuration loaded");
     debug!("Configuration parameters: {:?}", config);
 
     info!("Starting server...");
+    let storage_dir: &Path = Path::new(&config.storage_dir);
+    create_dir_all(storage_dir).await?;
     let git_root: &str = config.git_root.as_deref().unwrap_or("").trim_matches('/');
     let lfs_endpoint: String = if git_root.is_empty() {
         "/{user}/{repo}/info/lfs".to_owned()
@@ -72,12 +84,18 @@ async fn main() -> Result<()> {
     };
     debug!("LFS endpoint: {}", lfs_endpoint);
     let batch_endpoint: String = lfs_endpoint.clone() + "/objects/batch";
-    let mut app: Router = Router::new().route(&batch_endpoint, post(batch::handle));
-    if config.healthcheck_endpoint.unwrap_or(true) {
+    let state = AppState {
+        config,
+        lfs_endpoint,
+    };
+    let mut app: Router = Router::new()
+        .route(&batch_endpoint, post(batch::handle))
+        .with_state(state.clone());
+    if state.config.healthcheck_endpoint.unwrap_or(true) {
         app = app.route("/", get(|| async { "OxLFS is running!" }));
     }
-    let listener: TcpListener = TcpListener::bind(&config.listen).await?;
-    info!("Listening on {}", &config.listen);
+    let listener: TcpListener = TcpListener::bind(&state.config.listen).await?;
+    info!("Listening on {}", &state.config.listen);
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
