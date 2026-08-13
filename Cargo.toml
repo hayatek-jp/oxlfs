@@ -29,13 +29,21 @@ publish = false
 anyhow = "1.0.104"
 axum = { version = "0.8.9", features = ["http2"] }
 clap = "4.6.6"
+jsonwebtoken = "11.0.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+time = { version = "0.3.55", features = ["serde"] }
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "net", "fs", "time", "sync", "signal", "process", "tracing"] }
 toml = "1.1.4"
 tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-subscriber = "0.3.23"
+url = { version = "2.5.8", features = ["serde"] }
 
 [dev-dependencies]
 tokio = { version = "1.53.1", features = ["test-util"] }
+
+[features]
+default = ["aws-lc-rs"]
+aws-lc-rs = ["jsonwebtoken/aws_lc_rs"]
+rust-crypto = ["jsonwebtoken/rust_crypto"]
