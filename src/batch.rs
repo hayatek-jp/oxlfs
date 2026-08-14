@@ -249,12 +249,14 @@ pub(crate) async fn handle(
                         let claims = Claims {
                             exp: expires_at,
                             iat: now,
-                            iss: "OxLFS",
-                            user: UserClaims { id: "anonymous" },
+                            iss: "OxLFS".to_string(),
+                            user: UserClaims {
+                                id: "anonymous".to_string(),
+                            },
                             lfs: LfsClaims {
-                                user: &user,
-                                repo: &repo,
-                                oid: o.oid.as_ref(),
+                                user: user.clone(),
+                                repo: repo.clone(),
+                                oid: o.oid.clone(),
                             },
                         };
                         let jwt: String = jwt::encode(claims, &state.config.jwt_secret).unwrap();

@@ -3,29 +3,29 @@
 
 use anyhow::Result;
 use jsonwebtoken;
-use jsonwebtoken::{EncodingKey, Header};
+use jsonwebtoken::{DecodingKey, EncodingKey, Header, TokenData, Validation};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use tracing::info;
 
 /// A struct representing claims related to the user.
 #[derive(Deserialize, Serialize, Debug)]
-pub(crate) struct UserClaims<'a> {
+pub(crate) struct UserClaims {
     /// User id
-    pub(crate) id: &'a str,
+    pub(crate) id: String,
 }
 
 /// A struct representing claims related to the Git LFS (Large File Storage) system.
 #[derive(Debug, Deserialize, Serialize)]
-pub(crate) struct LfsClaims<'a> {
-    pub(crate) user: &'a str,
-    pub(crate) repo: &'a str,
-    pub(crate) oid: &'a str,
+pub(crate) struct LfsClaims {
+    pub(crate) user: String,
+    pub(crate) repo: String,
+    pub(crate) oid: String,
 }
 
 /// Represents the claims contained within a JSON Web Token (JWT).
 #[derive(Debug, Deserialize, Serialize)]
-pub(crate) struct Claims<'a> {
+pub(crate) struct Claims {
     /// Expiration time as UTC timestamp
     #[serde(with = "time::serde::timestamp")]
     pub(crate) exp: OffsetDateTime,
@@ -33,11 +33,11 @@ pub(crate) struct Claims<'a> {
     #[serde(with = "time::serde::timestamp")]
     pub(crate) iat: OffsetDateTime,
     /// Issuer
-    pub(crate) iss: &'a str,
+    pub(crate) iss: String,
     /// User
-    pub(crate) user: UserClaims<'a>,
+    pub(crate) user: UserClaims,
     /// LFS
-    pub(crate) lfs: LfsClaims<'a>,
+    pub(crate) lfs: LfsClaims,
 }
 
 /// Encodes JWT.
@@ -47,7 +47,7 @@ pub(crate) struct Claims<'a> {
 /// - `secret`: JWT secret
 ///
 /// ## Returns
-/// JWT using the default Algorithm.
+/// JWT using the default algorithm.
 pub(crate) fn encode(claims: Claims, secret: &str) -> Result<String> {
     let key: EncodingKey = EncodingKey::from_base64_secret(secret)?;
     let jwt: String = jsonwebtoken::encode(&Header::default(), &claims, &key)?;
@@ -56,4 +56,22 @@ pub(crate) fn encode(claims: Claims, secret: &str) -> Result<String> {
         &claims.user.id, &claims.lfs.oid
     );
     Ok(jwt)
+}
+
+/// Decodes JWT using the default algorithm.
+///
+/// ## Parameters
+/// - `jwt`: JWT
+/// - `secret`: JWT secret
+///
+/// ## Returns
+/// JWT claims.
+pub(crate) fn decode(jwt: &str, secret: &str) -> Result<Claims> {
+    let key: DecodingKey = DecodingKey::from_base64_secret(secret)?;
+    let claims: Claims = jsonwebtoken::decode::<Claims>(jwt, &key, &Validation::default())?.claims;
+    info!(
+        "JWT validated for user {}, oid {}",
+        claims.user.id, claims.lfs.oid
+    );
+    Ok(claims)
 }

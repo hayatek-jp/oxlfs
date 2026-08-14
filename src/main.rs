@@ -12,7 +12,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use axum;
 use axum::Router;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use clap::{ArgMatches, Command, arg};
 use tokio;
 use tokio::fs::create_dir_all;
@@ -84,12 +84,14 @@ async fn main() -> Result<()> {
     };
     debug!("LFS endpoint: {}", lfs_endpoint);
     let batch_endpoint: String = lfs_endpoint.clone() + "/objects/batch";
+    let upload_endpoint: String = lfs_endpoint.clone() + "/upload";
     let state = AppState {
         config,
         lfs_endpoint,
     };
     let mut app: Router = Router::new()
         .route(&batch_endpoint, post(batch::handle))
+        .route(&upload_endpoint, put(upload::handle))
         .with_state(state.clone());
     if state.config.healthcheck_endpoint.unwrap_or(true) {
         app = app.route("/", get(|| async { "OxLFS is running!" }));
