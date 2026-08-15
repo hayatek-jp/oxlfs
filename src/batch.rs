@@ -2,9 +2,11 @@
 // SPDX-FileCopyrightText: 2026 KATO Hayate <dev@hayatek.jp>
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::str::Chars;
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path as AxPath, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -185,11 +187,45 @@ fn validate_accept(headers: &HeaderMap) -> bool {
         })
 }
 
+/// Checks whether an object with the specified object ID (OID) exists in the file structure.
+///
+/// This function searches for a file based on the given base directory and the object ID.
+/// The OID is expected to be a string where the file structure is organized such that the
+/// first two characters form a subdirectory name, and the remaining portion of the OID
+/// determines the file name within that subdirectory.
+///
+/// ## Parameters
+///
+/// - `base`: A reference to the base directory path where the search begins.
+/// - `oid`: A string containing the object ID used to locate the file.
+///
+/// ## Returns
+///
+/// - `true` if the file corresponding to the OID exists in the expected
+///   directory structure under the given base directory.
+/// - `false` otherwise.
+fn is_object_exists(base: &Path, oid: &str) -> bool {
+    let mut path: PathBuf = base.to_path_buf();
+    let mut filename: String = String::new();
+    let mut chars: Chars = oid.chars();
+    while let Some(c1) = chars.next() {
+        if let Some(c2) = chars.next() {
+            path.push(format!("{}{}", c1, c2));
+            // TODO: Recursively search for the appropriate directory
+            break;
+        } else {
+            filename.push(c1);
+        }
+    }
+    filename += &chars.collect::<String>();
+    path.join(filename).exists()
+}
+
 /// Handles LFS batch API requests.
 pub(crate) async fn handle(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path((user, repo)): Path<(String, String)>,
+    AxPath((user, repo)): AxPath<(String, String)>,
     Json(payload): Json<BatchRequest>,
 ) -> (StatusCode, HeaderMap, Json<Value>) {
     trace!("headers: {:#?}", headers);
@@ -216,6 +252,9 @@ pub(crate) async fn handle(
         );
     }
     trace!("user: {}, repo: {}, payload: {:#?}", user, repo, payload);
+    let mut base_path: PathBuf = PathBuf::new();
+    base_path.push(&state.config.storage_dir);
+    base_path.push(format!("{}/{}/objects", user, repo));
     // TODO: Authentication
     match payload.operation {
         Operation::Upload => {
@@ -246,42 +285,45 @@ pub(crate) async fn handle(
                             BatchResponseObjectActionType,
                             BatchResponseObjectAction,
                         > = HashMap::new();
-                        let claims = Claims {
-                            exp: expires_at,
-                            iat: now,
-                            iss: "OxLFS".to_string(),
-                            user: UserClaims {
-                                id: "anonymous".to_string(),
-                            },
-                            lfs: LfsClaims {
-                                user: user.clone(),
-                                repo: repo.clone(),
-                                oid: o.oid.clone(),
-                            },
-                        };
-                        let jwt: String = jwt::encode(claims, &state.config.jwt_secret).unwrap();
-                        let header: HashMap<String, String> = HashMap::from_iter([(
-                            header::AUTHORIZATION.to_string(),
-                            format!("Bearer {}", jwt),
-                        )]);
-                        // TODO: Support verify action
-                        actions.insert(
-                            BatchResponseObjectActionType::Upload,
-                            BatchResponseObjectAction {
-                                href: format!(
-                                    "http{}://{}{}/upload",
-                                    if state.config.tls { "s" } else { "" },
-                                    headers.get("host").unwrap().to_str().unwrap(),
-                                    state.lfs_endpoint,
-                                )
-                                .replacen("{user}", &user, 1)
-                                .replacen("{repo}", &repo, 1)
-                                .parse()
-                                .unwrap(),
-                                header,
-                                expires_at,
-                            },
-                        );
+                        if !is_object_exists(&base_path, &o.oid) {
+                            let claims = Claims {
+                                exp: expires_at,
+                                iat: now,
+                                iss: "OxLFS".to_string(),
+                                user: UserClaims {
+                                    id: "anonymous".to_string(),
+                                },
+                                lfs: LfsClaims {
+                                    user: user.clone(),
+                                    repo: repo.clone(),
+                                    oid: o.oid.clone(),
+                                },
+                            };
+                            let jwt: String =
+                                jwt::encode(claims, &state.config.jwt_secret).unwrap();
+                            let header: HashMap<String, String> = HashMap::from_iter([(
+                                header::AUTHORIZATION.to_string(),
+                                format!("Bearer {}", jwt),
+                            )]);
+                            // TODO: Support verify action
+                            actions.insert(
+                                BatchResponseObjectActionType::Upload,
+                                BatchResponseObjectAction {
+                                    href: format!(
+                                        "http{}://{}{}/upload",
+                                        if state.config.tls { "s" } else { "" },
+                                        headers.get("host").unwrap().to_str().unwrap(),
+                                        state.lfs_endpoint,
+                                    )
+                                    .replacen("{user}", &user, 1)
+                                    .replacen("{repo}", &repo, 1)
+                                    .parse()
+                                    .unwrap(),
+                                    header,
+                                    expires_at,
+                                },
+                            );
+                        }
                         BatchResponseObject::Ok {
                             oid: o.oid.clone(),
                             size: o.size,
