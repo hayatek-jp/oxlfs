@@ -8,9 +8,11 @@ use std::str::Chars;
 use axum::Json;
 use axum::extract::{Path as AxPath, State};
 use axum::http::{HeaderMap, StatusCode, header};
+use futures::future::join_all;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use time::{Duration, OffsetDateTime};
+use tokio::fs::try_exists;
 use tracing::{info, trace, warn};
 use url::Url;
 
@@ -187,6 +189,39 @@ fn validate_accept(headers: &HeaderMap) -> bool {
         })
 }
 
+/// Constructs a full file system path to a specific object within a base directory
+/// using an object ID (OID). The OID is used to create a directory structure and
+/// filename.
+///
+/// The function processes the provided OID in pairs of characters to determine
+/// subdirectory names. These subdirectories are appended to the base path until
+/// the first pair is resolved. The rest of the OID determines the file name.
+///
+/// ## Parameters
+///
+/// - `base`: A reference to the base directory [`Path`] where the object resides.
+/// - `oid`: A string slice representing the object identifier (OID).
+///
+/// # Returns
+///
+/// Returns the constructed [`PathBuf`] representing the file path of the object.
+fn get_object_path(base: &Path, oid: &str) -> PathBuf {
+    let mut path: PathBuf = base.to_path_buf();
+    let mut filename: String = String::new();
+    let mut chars: Chars = oid.chars();
+    while let Some(c1) = chars.next() {
+        if let Some(c2) = chars.next() {
+            path.push(format!("{}{}", c1, c2));
+            // TODO: Recursively search for the appropriate directory
+            break;
+        } else {
+            filename.push(c1);
+        }
+    }
+    filename += &chars.collect::<String>();
+    path.join(filename)
+}
+
 /// Checks whether an object with the specified object ID (OID) exists in the file structure.
 ///
 /// This function searches for a file based on the given base directory and the object ID.
@@ -204,21 +239,10 @@ fn validate_accept(headers: &HeaderMap) -> bool {
 /// - `true` if the file corresponding to the OID exists in the expected
 ///   directory structure under the given base directory.
 /// - `false` otherwise.
-fn is_object_exists(base: &Path, oid: &str) -> bool {
-    let mut path: PathBuf = base.to_path_buf();
-    let mut filename: String = String::new();
-    let mut chars: Chars = oid.chars();
-    while let Some(c1) = chars.next() {
-        if let Some(c2) = chars.next() {
-            path.push(format!("{}{}", c1, c2));
-            // TODO: Recursively search for the appropriate directory
-            break;
-        } else {
-            filename.push(c1);
-        }
-    }
-    filename += &chars.collect::<String>();
-    path.join(filename).exists()
+async fn is_object_exists(base: &Path, oid: &str) -> bool {
+    try_exists(&get_object_path(base, oid))
+        .await
+        .unwrap_or(false)
 }
 
 /// Handles LFS batch API requests.
@@ -277,61 +301,57 @@ pub(crate) async fn handle(
             // NOTE: If `fallocate` fails for even a single object, return an error for all objects not present on the server.
             let response = BatchResponse {
                 transfer: Transfer::Basic,
-                objects: payload
-                    .objects
-                    .iter()
-                    .map(|o| {
-                        let mut actions: HashMap<
-                            BatchResponseObjectActionType,
-                            BatchResponseObjectAction,
-                        > = HashMap::new();
-                        if !is_object_exists(&base_path, &o.oid) {
-                            let claims = Claims {
-                                exp: expires_at,
-                                iat: now,
-                                iss: "OxLFS".to_string(),
-                                user: UserClaims {
-                                    id: "anonymous".to_string(),
-                                },
-                                lfs: LfsClaims {
-                                    user: user.clone(),
-                                    repo: repo.clone(),
-                                    oid: o.oid.clone(),
-                                },
-                            };
-                            let jwt: String =
-                                jwt::encode(claims, &state.config.jwt_secret).unwrap();
-                            let header: HashMap<String, String> = HashMap::from_iter([(
-                                header::AUTHORIZATION.to_string(),
-                                format!("Bearer {}", jwt),
-                            )]);
-                            // TODO: Support verify action
-                            actions.insert(
-                                BatchResponseObjectActionType::Upload,
-                                BatchResponseObjectAction {
-                                    href: format!(
-                                        "http{}://{}{}/upload",
-                                        if state.config.tls { "s" } else { "" },
-                                        headers.get("host").unwrap().to_str().unwrap(),
-                                        state.lfs_endpoint,
-                                    )
-                                    .replacen("{user}", &user, 1)
-                                    .replacen("{repo}", &repo, 1)
-                                    .parse()
-                                    .unwrap(),
-                                    header,
-                                    expires_at,
-                                },
-                            );
-                        }
-                        BatchResponseObject::Ok {
-                            oid: o.oid.clone(),
-                            size: o.size,
-                            authenticated: Some(false), // TODO: Implement authentication
-                            actions,
-                        }
-                    })
-                    .collect(),
+                objects: join_all(payload.objects.iter().map(|o| async {
+                    let mut actions: HashMap<
+                        BatchResponseObjectActionType,
+                        BatchResponseObjectAction,
+                    > = HashMap::new();
+                    if !is_object_exists(&base_path, &o.oid).await {
+                        let claims = Claims {
+                            exp: expires_at,
+                            iat: now,
+                            iss: "OxLFS".to_string(),
+                            user: UserClaims {
+                                id: "anonymous".to_string(),
+                            },
+                            lfs: LfsClaims {
+                                user: user.clone(),
+                                repo: repo.clone(),
+                                oid: o.oid.clone(),
+                            },
+                        };
+                        let jwt: String = jwt::encode(claims, &state.config.jwt_secret).unwrap();
+                        let header: HashMap<String, String> = HashMap::from_iter([(
+                            header::AUTHORIZATION.to_string(),
+                            format!("Bearer {}", jwt),
+                        )]);
+                        // TODO: Support verify action
+                        actions.insert(
+                            BatchResponseObjectActionType::Upload,
+                            BatchResponseObjectAction {
+                                href: format!(
+                                    "http{}://{}{}/upload",
+                                    if state.config.tls { "s" } else { "" },
+                                    headers.get("host").unwrap().to_str().unwrap(),
+                                    state.lfs_endpoint,
+                                )
+                                .replacen("{user}", &user, 1)
+                                .replacen("{repo}", &repo, 1)
+                                .parse()
+                                .unwrap(),
+                                header,
+                                expires_at,
+                            },
+                        );
+                    }
+                    BatchResponseObject::Ok {
+                        oid: o.oid.clone(),
+                        size: o.size,
+                        authenticated: Some(true),
+                        actions,
+                    }
+                }))
+                .await,
                 hash_algo: HashAlgo::Sha256,
             };
             info!("Successfully generated response for batch upload request");
@@ -341,12 +361,95 @@ pub(crate) async fn handle(
                 Json(serde_json::to_value(response).unwrap()),
             )
         }
-        Operation::Download => (
-            StatusCode::NOT_IMPLEMENTED,
-            HeaderMap::from_iter([(header::CONTENT_TYPE, CONTENT_TYPE.parse().unwrap())]),
-            Json(json!({
-                "message": "Download operation is not implemented yet",
-            })),
-        ),
+        Operation::Download => {
+            info!("Batch download request to {}/{}", user, repo);
+            if let Some(transfers) = payload.transfers
+                && !transfers.contains(&Transfer::Basic)
+            {
+                warn!("Client does not support basic transfer adapter");
+                return (
+                    StatusCode::NOT_ACCEPTABLE,
+                    HeaderMap::from_iter([(header::CONTENT_TYPE, CONTENT_TYPE.parse().unwrap())]),
+                    Json(json!({
+                        "message": "Unacceptable transfer adapters"
+                    })),
+                );
+            }
+            let now: OffsetDateTime = OffsetDateTime::now_utc().truncate_to_second();
+            let expires_at: OffsetDateTime = now + Duration::hours(1); // TODO: Use config
+            let response = BatchResponse {
+                transfer: Transfer::Basic,
+                objects: join_all(payload.objects.iter().map(|o| async {
+                    let mut actions: HashMap<
+                        BatchResponseObjectActionType,
+                        BatchResponseObjectAction,
+                    > = HashMap::new();
+                    // TODO: Authentication
+                    let object_path: PathBuf = get_object_path(&base_path, &o.oid);
+                    // TODO: Check object size
+                    if try_exists(&object_path).await.unwrap_or(false) {
+                        let claims = Claims {
+                            exp: expires_at,
+                            iat: now,
+                            iss: "OxLFS".to_string(),
+                            user: UserClaims {
+                                id: "anonymous".to_string(),
+                            },
+                            lfs: LfsClaims {
+                                user: user.clone(),
+                                repo: repo.clone(),
+                                oid: o.oid.clone(),
+                            },
+                        };
+                        let jwt: String = jwt::encode(claims, &state.config.jwt_secret).unwrap();
+                        let header: HashMap<String, String> = HashMap::from_iter([(
+                            header::AUTHORIZATION.to_string(),
+                            format!("Bearer {}", jwt),
+                        )]);
+                        actions.insert(
+                            BatchResponseObjectActionType::Download,
+                            BatchResponseObjectAction {
+                                href: format!(
+                                    "http{}://{}{}/download",
+                                    if state.config.tls { "s" } else { "" },
+                                    headers.get("host").unwrap().to_str().unwrap(),
+                                    state.lfs_endpoint,
+                                )
+                                .replacen("{user}", &user, 1)
+                                .replacen("{repo}", &repo, 1)
+                                .parse()
+                                .unwrap(),
+                                header,
+                                expires_at,
+                            },
+                        );
+                        BatchResponseObject::Ok {
+                            oid: o.oid.clone(),
+                            size: o.size,
+                            authenticated: Some(true),
+                            actions,
+                        }
+                    } else {
+                        warn!("Requested object not found, oid {}", o.oid);
+                        BatchResponseObject::Err {
+                            oid: o.oid.clone(),
+                            size: o.size,
+                            error: BatchResponseObjectError {
+                                code: 404,
+                                message: "Object not found".to_string(),
+                            },
+                        }
+                    }
+                }))
+                .await,
+                hash_algo: HashAlgo::Sha256,
+            };
+            info!("Successfully generated response for batch download request");
+            (
+                StatusCode::OK,
+                HeaderMap::from_iter([(header::CONTENT_TYPE, CONTENT_TYPE.parse().unwrap())]),
+                Json(serde_json::to_value(response).unwrap()),
+            )
+        }
     }
 }

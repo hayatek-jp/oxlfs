@@ -29,6 +29,7 @@ publish = false
 anyhow = "1.0.104"
 axum = { version = "0.8.9", features = ["http2"] }
 clap = "4.6.6"
+futures = "0.3.34"
 futures-util = "0.3.34"
 jsonwebtoken = "11.0.0"
 serde = { version = "1.0.229", features = ["derive"] }
