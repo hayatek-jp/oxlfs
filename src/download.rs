@@ -16,6 +16,7 @@ use tokio::fs::File;
 use tokio_util::io::ReaderStream;
 use tracing::{info, trace, warn};
 
+use crate::batch::BatchResponseObjectActionType;
 use crate::jwt::Claims;
 use crate::{AppState, jwt};
 
@@ -83,9 +84,17 @@ pub(crate) async fn handle(
     }
     trace!("JWT claims: {:#?}", claims);
     if claims.exp < OffsetDateTime::now_utc() {
+        warn!("JWT expired");
         builder = builder.status(StatusCode::UNAUTHORIZED);
         return builder
             .body(StatusCode::UNAUTHORIZED.as_str().into())
+            .unwrap();
+    }
+    if claims.lfs.action != BatchResponseObjectActionType::Download {
+        warn!("Invalid action");
+        builder = builder.status(StatusCode::BAD_REQUEST);
+        return builder
+            .body(StatusCode::BAD_REQUEST.as_str().into())
             .unwrap();
     }
     let mut base: PathBuf = PathBuf::new();

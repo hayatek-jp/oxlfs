@@ -96,7 +96,7 @@ pub(crate) struct BatchRequest {
 }
 
 /// Batch API action types.
-#[derive(Debug, Serialize, Eq, Hash, PartialEq)]
+#[derive(Debug, Serialize, Eq, Hash, PartialEq, Deserialize)]
 pub(crate) enum BatchResponseObjectActionType {
     #[serde(rename = "download")]
     Download,
@@ -318,6 +318,7 @@ pub(crate) async fn handle(
                                 user: user.clone(),
                                 repo: repo.clone(),
                                 oid: o.oid.clone(),
+                                action: BatchResponseObjectActionType::Upload,
                             },
                         };
                         let jwt: String = jwt::encode(claims, &state.config.jwt_secret).unwrap();
@@ -399,6 +400,7 @@ pub(crate) async fn handle(
                                 user: user.clone(),
                                 repo: repo.clone(),
                                 oid: o.oid.clone(),
+                                action: BatchResponseObjectActionType::Download,
                             },
                         };
                         let jwt: String = jwt::encode(claims, &state.config.jwt_secret).unwrap();

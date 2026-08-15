@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // SPDX-FileCopyrightText: 2026 KATO Hayate <dev@hayatek.jp>
 
+use crate::batch::BatchResponseObjectActionType;
 use anyhow::Result;
 use jsonwebtoken;
-use jsonwebtoken::{DecodingKey, EncodingKey, Header, TokenData, Validation};
+use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use tracing::info;
@@ -21,6 +22,7 @@ pub(crate) struct LfsClaims {
     pub(crate) user: String,
     pub(crate) repo: String,
     pub(crate) oid: String,
+    pub(crate) action: BatchResponseObjectActionType,
 }
 
 /// Represents the claims contained within a JSON Web Token (JWT).

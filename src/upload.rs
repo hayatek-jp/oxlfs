@@ -16,9 +16,10 @@ use time::OffsetDateTime;
 use tokio::fs::{File, create_dir_all, rename, try_exists};
 use tokio::io::BufWriter;
 use tokio_util::io::StreamReader;
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, warn};
 
 use crate::AppState;
+use crate::batch::BatchResponseObjectActionType;
 use crate::jwt;
 use crate::jwt::Claims;
 
@@ -148,7 +149,12 @@ pub(crate) async fn handle(
     }
     trace!("JWT claims: {:#?}", claims);
     if claims.exp < OffsetDateTime::now_utc() {
+        warn!("JWT expired");
         return StatusCode::UNAUTHORIZED;
+    }
+    if claims.lfs.action != BatchResponseObjectActionType::Upload {
+        warn!("Invalid action");
+        return StatusCode::BAD_REQUEST;
     }
 
     let mut path: PathBuf = PathBuf::new();
