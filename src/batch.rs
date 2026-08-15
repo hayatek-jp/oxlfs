@@ -73,7 +73,7 @@ pub(crate) struct BatchRequestRef {
 /// Git LFS Object.
 #[derive(Debug, Deserialize)]
 pub(crate) struct BatchRequestObject {
-    pub(crate) oid: String, // TODO: Validate hash format
+    pub(crate) oid: String,
     pub(crate) size: u64,
 }
 
@@ -245,6 +245,34 @@ async fn is_object_exists(base: &Path, oid: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Validates if a given string is a valid SHA-256 hash.
+///
+/// A valid SHA-256 hash must meet the following criteria:
+/// 1. It must be exactly 64 characters long.
+/// 2. It must consist only of valid hexadecimal digits (0-9, a-f, A-F).
+///
+/// ## Parameters
+///
+/// - `sha256`: A string slice representing the potential SHA-256 hash to validate.
+///
+/// ## Returns
+///
+/// - `true` if the input string is a valid SHA-256 hash.
+/// - `false` otherwise.
+///
+/// ## Examples
+///
+/// ```
+/// let valid_hash = "9c1185a5c5e9fc54612808977ee8f548b2258d31aaa24972e4ff50c5bfb8a7b8";
+/// let invalid_hash = "invalid_hash_string";
+///
+/// assert!(validate_sha256(valid_hash));
+/// assert!(!validate_sha256(invalid_hash));
+/// ```
+fn validate_sha256(sha256: &str) -> bool {
+    sha256.len() == 64 && sha256.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 /// Handles LFS batch API requests.
 pub(crate) async fn handle(
     State(state): State<AppState>,
@@ -302,6 +330,17 @@ pub(crate) async fn handle(
             let response = BatchResponse {
                 transfer: Transfer::Basic,
                 objects: join_all(payload.objects.iter().map(|o| async {
+                    if !validate_sha256(&o.oid) {
+                        warn!("Invalid SHA-256 hash detected: {}", o.oid);
+                        return BatchResponseObject::Err {
+                            oid: o.oid.clone(),
+                            size: o.size,
+                            error: BatchResponseObjectError {
+                                code: StatusCode::NOT_ACCEPTABLE.as_u16(),
+                                message: "Invalid SHA-256 hash".to_string(),
+                            },
+                        };
+                    }
                     let mut actions: HashMap<
                         BatchResponseObjectActionType,
                         BatchResponseObjectAction,
@@ -381,6 +420,17 @@ pub(crate) async fn handle(
             let response = BatchResponse {
                 transfer: Transfer::Basic,
                 objects: join_all(payload.objects.iter().map(|o| async {
+                    if !validate_sha256(&o.oid) {
+                        warn!("Invalid SHA-256 hash detected: {}", o.oid);
+                        return BatchResponseObject::Err {
+                            oid: o.oid.clone(),
+                            size: o.size,
+                            error: BatchResponseObjectError {
+                                code: StatusCode::NOT_ACCEPTABLE.as_u16(),
+                                message: "Invalid SHA-256 hash".to_string(),
+                            },
+                        };
+                    }
                     let mut actions: HashMap<
                         BatchResponseObjectActionType,
                         BatchResponseObjectAction,
