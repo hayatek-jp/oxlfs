@@ -3,6 +3,7 @@
 
 mod batch;
 mod config;
+mod download;
 mod jwt;
 mod upload;
 
@@ -85,6 +86,7 @@ async fn main() -> Result<()> {
     debug!("LFS endpoint: {}", lfs_endpoint);
     let batch_endpoint: String = lfs_endpoint.clone() + "/objects/batch";
     let upload_endpoint: String = lfs_endpoint.clone() + "/upload";
+    let download_endpoint: String = lfs_endpoint.clone() + "/download";
     let state = AppState {
         config,
         lfs_endpoint,
@@ -92,6 +94,7 @@ async fn main() -> Result<()> {
     let mut app: Router = Router::new()
         .route(&batch_endpoint, post(batch::handle))
         .route(&upload_endpoint, put(upload::handle))
+        .route(&download_endpoint, get(download::handle))
         .with_state(state.clone());
     if state.config.healthcheck_endpoint.unwrap_or(true) {
         app = app.route("/", get(|| async { "OxLFS is running!" }));
