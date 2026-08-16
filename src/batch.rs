@@ -3,11 +3,14 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::str::Chars;
+use std::str::{Chars, SplitWhitespace};
 
+use anyhow::{Result, anyhow};
 use axum::Json;
 use axum::extract::{Path as AxPath, State};
 use axum::http::{HeaderMap, StatusCode, header};
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as base64;
 use futures::future::join_all;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -17,8 +20,10 @@ use tracing::{info, trace, warn};
 use url::Url;
 
 use crate::AppState;
+use crate::hash::verify_password;
 use crate::jwt;
 use crate::jwt::{Claims, LfsClaims, UserClaims};
+use crate::users::{User, UserDB};
 
 /// The content type for LFS.
 const CONTENT_TYPE: &str = "application/vnd.git-lfs+json";
@@ -273,6 +278,66 @@ fn validate_sha256(sha256: &str) -> bool {
     sha256.len() == 64 && sha256.chars().all(|c| c.is_ascii_hexdigit())
 }
 
+/// Authenticates a user based on the `Authorization` header present in the incoming request.
+///
+/// ## Parameters
+///
+/// - `user_db`: A reference to the [`UserDB`], which contains user details and credentials.
+/// - `headers`: A reference to the [`HeaderMap`] containing the HTTP request headers.
+///
+/// ## Returns
+///
+/// Returns a `Result` that:
+/// - On success, contains an immutable reference to an authenticated user (`&User`).
+/// - On failure, returns an error describing why the authentication failed.
+///
+/// ## Behavior
+///
+/// 1. Extracts the `Authorization` header from the provided `headers`.
+/// 2. Validates the authentication scheme, which must be `Basic` (case insensitive).
+/// 3. Decodes the Base64-encoded credentials.
+/// 4. Splits the decoded credentials into a `username` and `password`.
+/// 5. Verifies the provided password against the stored hash for the user from the `user_db`.
+/// 6. Returns the user associated with the credentials if authentication is successful.
+/// 7. If no `Authorization` header is provided, or if authentication fails, it defaults to returning
+///    a reference to the "anonymous" user (if present in the `user_db`).
+///
+/// ## Errors
+///
+/// This function will return an error if:
+/// - The `Authorization` header is missing or malformed.
+/// - The authentication scheme is unsupported (not `Basic`).
+/// - The Base64 decoding of the credentials fails.
+/// - The credentials are missing a username or password.
+/// - The username is not found in the `user_db`.
+/// - The password verification fails.
+async fn authenticate<'a>(user_db: &'a UserDB, headers: &HeaderMap) -> Result<&'a User> {
+    if let Some(authorization) = headers.get(header::AUTHORIZATION) {
+        let mut iter: SplitWhitespace = authorization.to_str()?.split_whitespace();
+        let method: &str = &iter.next().unwrap_or("").to_lowercase();
+        if method != "basic" {
+            return Err(anyhow!("Unsupported authentication method: {}", method));
+        }
+        let credential: &str = iter.next().unwrap_or("");
+        if credential.is_empty() {
+            return Err(anyhow!("Empty authorization credential"));
+        }
+        let decoded: String = String::from_utf8(base64.decode(credential)?)?;
+        if let Some((username, password)) = decoded.split_once(':') {
+            if let Some(user) = user_db.users.get(username) {
+                if verify_password(password, &user.password_hash).await? {
+                    return Ok(&user);
+                }
+            } else {
+                return Err(anyhow!("User not found: {}", username));
+            }
+        } else {
+            return Err(anyhow!("Invalid authorization credential"));
+        }
+    }
+    Ok(user_db.users.get("anonymous").unwrap())
+}
+
 /// Handles LFS batch API requests.
 pub(crate) async fn handle(
     State(state): State<AppState>,
@@ -307,10 +372,109 @@ pub(crate) async fn handle(
     let mut base_path: PathBuf = PathBuf::new();
     base_path.push(&state.config.storage_dir);
     base_path.push(format!("{}/{}/objects", user, repo));
-    // TODO: Authentication
+    let auth_user: &User;
+    match authenticate(&state.user_db, &headers).await {
+        Ok(user) => auth_user = user,
+        Err(e) => {
+            warn!("Authentication error: {}", e);
+            return (
+                StatusCode::UNAUTHORIZED,
+                HeaderMap::from_iter([(header::CONTENT_TYPE, CONTENT_TYPE.parse().unwrap())]),
+                Json(json!({
+                    "message": "Authentication error",
+                    // TODO: Add `documentation_url` and `request_id`
+                })),
+            );
+        }
+    }
     match payload.operation {
         Operation::Upload => {
-            info!("Batch upload request to {}/{}", user, repo);
+            info!(
+                "Batch upload request to {}/{} by user {}",
+                user, repo, auth_user.name
+            );
+            if auth_user.name == "anonymous" {
+                warn!(
+                    "Write access to {}/{} by user anonymous was denied",
+                    user, repo
+                );
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    HeaderMap::from_iter([
+                        (header::CONTENT_TYPE, CONTENT_TYPE.parse().unwrap()),
+                        (
+                            header::WWW_AUTHENTICATE,
+                            "Basic realm=\"Git LFS\"".parse().unwrap(),
+                        ),
+                    ]),
+                    Json(json!({
+                        "message": "Authentication error",
+                        // TODO: Add `documentation_url` and `request_id`
+                    })),
+                );
+            }
+            if let Some(permission) = auth_user.permissions.get(&format!(
+                "{}/{}",
+                user,
+                repo.strip_suffix(".git").unwrap()
+            )) {
+                if !permission.write {
+                    warn!(
+                        "Write access to {} by user {} was denied",
+                        permission.repo, auth_user.name
+                    );
+                    return (
+                        StatusCode::FORBIDDEN,
+                        HeaderMap::from_iter([(
+                            header::CONTENT_TYPE,
+                            CONTENT_TYPE.parse().unwrap(),
+                        )]),
+                        Json(json!({
+                            "message": format!("You do not have a write permission to {}", permission.repo),
+                            // TODO: Add `documentation_url` and `request_id`
+                        })),
+                    );
+                }
+                info!(
+                    "Write access to {} by user {} has been authenticated",
+                    permission.repo, auth_user.name
+                );
+            } else if let Some(permission) = auth_user.permissions.get(&format!("{user}/*")) {
+                if !permission.write {
+                    warn!(
+                        "Write access to {} by user {} was denied",
+                        permission.repo, auth_user.name
+                    );
+                    return (
+                        StatusCode::FORBIDDEN,
+                        HeaderMap::from_iter([(
+                            header::CONTENT_TYPE,
+                            CONTENT_TYPE.parse().unwrap(),
+                        )]),
+                        Json(json!({
+                            "message": format!("You do not have a write permission to {}", permission.repo),
+                            // TODO: Add `documentation_url` and `request_id`
+                        })),
+                    );
+                }
+                info!(
+                    "Write access to {} by user {} has been authenticated",
+                    permission.repo, auth_user.name
+                );
+            } else {
+                warn!(
+                    "Write access to {}/{} by user {} was denied",
+                    user, repo, auth_user.name
+                );
+                return (
+                    StatusCode::NOT_FOUND,
+                    HeaderMap::from_iter([(header::CONTENT_TYPE, CONTENT_TYPE.parse().unwrap())]),
+                    Json(json!({
+                        "message": "Repository not found",
+                        // TODO: Add `documentation_url` and `request_id`
+                    })),
+                );
+            }
             if let Some(transfers) = payload.transfers
                 && !transfers.contains(&Transfer::Basic)
             {
@@ -351,7 +515,7 @@ pub(crate) async fn handle(
                             iat: now,
                             iss: "OxLFS".to_string(),
                             user: UserClaims {
-                                id: "anonymous".to_string(),
+                                name: auth_user.name.clone(),
                             },
                             lfs: LfsClaims {
                                 user: user.clone(),
@@ -402,7 +566,120 @@ pub(crate) async fn handle(
             )
         }
         Operation::Download => {
-            info!("Batch download request to {}/{}", user, repo);
+            info!(
+                "Batch download request to {}/{} by user {}",
+                user, repo, auth_user.name
+            );
+            if let Some(permission) = auth_user.permissions.get(&format!(
+                "{}/{}",
+                user,
+                repo.strip_suffix(".git").unwrap()
+            )) {
+                if !permission.read {
+                    warn!(
+                        "Read access to {} by user {} was denied",
+                        permission.repo, auth_user.name
+                    );
+                    if auth_user.name == "anonymous" {
+                        return (
+                            StatusCode::UNAUTHORIZED,
+                            HeaderMap::from_iter([
+                                (header::CONTENT_TYPE, CONTENT_TYPE.parse().unwrap()),
+                                (
+                                    header::WWW_AUTHENTICATE,
+                                    "Basic realm=\"Git LFS\"".parse().unwrap(),
+                                ),
+                            ]),
+                            Json(json!({
+                                "message": "Authentication error",
+                                // TODO: Add `documentation_url` and `request_id`
+                            })),
+                        );
+                    }
+                    return (
+                        StatusCode::NOT_FOUND,
+                        HeaderMap::from_iter([(
+                            header::CONTENT_TYPE,
+                            CONTENT_TYPE.parse().unwrap(),
+                        )]),
+                        Json(json!({
+                            "message": "Repository not found",
+                            // TODO: Add `documentation_url` and `request_id`
+                        })),
+                    );
+                }
+                info!(
+                    "Read access to {} by user {} has been authenticated",
+                    permission.repo, auth_user.name
+                );
+            } else if let Some(permission) = auth_user.permissions.get(&format!("{user}/*")) {
+                if !permission.read {
+                    warn!(
+                        "Read access to {} by user {} was denied",
+                        permission.repo, auth_user.name
+                    );
+                    if auth_user.name == "anonymous" {
+                        return (
+                            StatusCode::UNAUTHORIZED,
+                            HeaderMap::from_iter([
+                                (header::CONTENT_TYPE, CONTENT_TYPE.parse().unwrap()),
+                                (
+                                    header::WWW_AUTHENTICATE,
+                                    "Basic realm=\"Git LFS\"".parse().unwrap(),
+                                ),
+                            ]),
+                            Json(json!({
+                                "message": "Authentication error",
+                                // TODO: Add `documentation_url` and `request_id`
+                            })),
+                        );
+                    }
+                    return (
+                        StatusCode::NOT_FOUND,
+                        HeaderMap::from_iter([(
+                            header::CONTENT_TYPE,
+                            CONTENT_TYPE.parse().unwrap(),
+                        )]),
+                        Json(json!({
+                            "message": "Repository not found",
+                            // TODO: Add `documentation_url` and `request_id`
+                        })),
+                    );
+                }
+                info!(
+                    "Read access to {} by user {} has been authenticated",
+                    permission.repo, auth_user.name
+                );
+            } else {
+                warn!(
+                    "Read access to {}/{} by user {} was denied",
+                    user, repo, auth_user.name
+                );
+                if auth_user.name == "anonymous" {
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        HeaderMap::from_iter([
+                            (header::CONTENT_TYPE, CONTENT_TYPE.parse().unwrap()),
+                            (
+                                header::WWW_AUTHENTICATE,
+                                "Basic realm=\"Git LFS\"".parse().unwrap(),
+                            ),
+                        ]),
+                        Json(json!({
+                            "message": "Authentication error",
+                            // TODO: Add `documentation_url` and `request_id`
+                        })),
+                    );
+                }
+                return (
+                    StatusCode::NOT_FOUND,
+                    HeaderMap::from_iter([(header::CONTENT_TYPE, CONTENT_TYPE.parse().unwrap())]),
+                    Json(json!({
+                        "message": "Repository not found",
+                        // TODO: Add `documentation_url` and `request_id`
+                    })),
+                );
+            }
             if let Some(transfers) = payload.transfers
                 && !transfers.contains(&Transfer::Basic)
             {
@@ -444,7 +721,7 @@ pub(crate) async fn handle(
                             iat: now,
                             iss: "OxLFS".to_string(),
                             user: UserClaims {
-                                id: "anonymous".to_string(),
+                                name: auth_user.name.clone(),
                             },
                             lfs: LfsClaims {
                                 user: user.clone(),

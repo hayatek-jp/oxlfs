@@ -13,7 +13,7 @@ use tracing::info;
 #[derive(Deserialize, Serialize, Debug)]
 pub(crate) struct UserClaims {
     /// User id
-    pub(crate) id: String,
+    pub(crate) name: String,
 }
 
 /// A struct representing claims related to the Git LFS (Large File Storage) system.
@@ -55,7 +55,7 @@ pub(crate) fn encode(claims: Claims, secret: &str) -> Result<String> {
     let jwt: String = jsonwebtoken::encode(&Header::default(), &claims, &key)?;
     info!(
         "JWT issued for user {}, oid {}",
-        &claims.user.id, &claims.lfs.oid
+        &claims.user.name, &claims.lfs.oid
     );
     Ok(jwt)
 }
@@ -73,7 +73,7 @@ pub(crate) fn decode(jwt: &str, secret: &str) -> Result<Claims> {
     let claims: Claims = jsonwebtoken::decode::<Claims>(jwt, &key, &Validation::default())?.claims;
     info!(
         "JWT validated for user {}, oid {}",
-        claims.user.id, claims.lfs.oid
+        claims.user.name, claims.lfs.oid
     );
     Ok(claims)
 }

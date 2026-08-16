@@ -4,31 +4,35 @@
 mod batch;
 mod config;
 mod download;
+mod hash;
 mod jwt;
 mod upload;
+mod users;
 
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use axum;
 use axum::Router;
 use axum::routing::{get, post, put};
 use clap::{ArgMatches, Command, arg};
 use tokio;
-use tokio::fs::create_dir_all;
+use tokio::fs::{create_dir_all, try_exists};
 use tokio::net::TcpListener;
 use tokio::signal;
-use tracing::{Level, debug, error, info, warn};
+use tracing::{Level, debug, error, info, trace, warn};
 use tracing_subscriber;
 
 use config::Config;
+use users::UserDB;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub config: Arc<Config>,
+    pub user_db: Arc<UserDB>,
     pub lfs_endpoint: String,
 }
 
@@ -67,12 +71,32 @@ async fn main() -> Result<()> {
     } else {
         Path::new("/etc/oxlfs/config.toml")
     };
+    if !try_exists(config_path).await? {
+        error!("Configuration file not found: {:?}", config_path);
+        return Err(anyhow!("Configuration file not found: {:?}", config_path));
+    }
 
     info!("Loading configuration...");
     debug!("Configuration file path: {:?}", config_path);
     let config: Arc<Config> = Arc::new(Config::load(config_path).await?);
+    let config_dir: &Path = if let Some(file) = &config.config_dir {
+        Path::new(file)
+    } else if cfg!(debug_assertions) {
+        Path::new("./sysroot/etc/oxlfs")
+    } else if cfg!(target_family = "windows") {
+        Path::new(r"C:\ProgramData\oxlfs")
+    } else {
+        Path::new("/etc/oxlfs")
+    };
     info!("Configuration loaded");
     debug!("Configuration parameters: {:?}", config);
+    debug!("Configuration directory: {:?}", config_dir);
+
+    info!("Loading user database...");
+    let user_db_path: &Path = &config_dir.join("users.toml");
+    let user_db: Arc<UserDB> = Arc::new(UserDB::load(user_db_path).await?);
+    info!("User database loaded");
+    // trace!("User database: {:?}", user_db);
 
     info!("Starting server...");
     let storage_dir: &Path = Path::new(&config.storage_dir);
@@ -89,6 +113,7 @@ async fn main() -> Result<()> {
     let download_endpoint: String = lfs_endpoint.clone() + "/download";
     let state = AppState {
         config,
+        user_db,
         lfs_endpoint,
     };
     let mut app: Router = Router::new()

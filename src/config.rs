@@ -39,6 +39,8 @@ pub(crate) struct Config {
     pub(crate) healthcheck_endpoint: Option<bool>,
     /// JWT secret
     pub(crate) jwt_secret: String,
+    /// Configuration file directory
+    pub(crate) config_dir: Option<String>,
 }
 
 impl Config {
