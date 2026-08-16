@@ -12,19 +12,27 @@ mod users;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::config::LogLevel;
 use anyhow::{Result, anyhow};
 use axum;
 use axum::Router;
 use axum::routing::{get, post, put};
 use clap::{ArgMatches, Command, arg};
+use config::Config;
 use tokio;
 use tokio::fs::{create_dir_all, try_exists};
 use tokio::net::TcpListener;
 use tokio::signal;
 use tracing::{Level, debug, error, info, warn};
+use tracing_appender;
+use tracing_appender::rolling;
+use tracing_appender::rolling::RollingFileAppender;
 use tracing_subscriber;
-
-use config::Config;
+use tracing_subscriber::filter::LevelFilter;
+use tracing_subscriber::fmt::MakeWriter;
+use tracing_subscriber::fmt::writer::MakeWriterExt;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 use users::UserDB;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -47,20 +55,12 @@ async fn shutdown_signal() {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_max_level(Level::TRACE)
-        .init();
-
     let matches: ArgMatches = Command::new("OxLFS")
         .version(VERSION)
         .author("KATO Hayate")
         .about("A Git LFS server written in Rust")
         .arg(arg!(-c --config <FILE> "Configuration file path").required(false))
         .get_matches();
-
-    info!("OxLFS v{}", VERSION);
-    warn!("As this application is a beta version, it may contain many breaking changes.");
-    debug!("Command line arguments: {:?}", matches);
 
     let config_path: &Path = if let Some(file) = matches.get_one::<String>("config") {
         Path::new(file)
@@ -72,12 +72,9 @@ async fn main() -> Result<()> {
         Path::new("/etc/oxlfs/config.toml")
     };
     if !try_exists(config_path).await? {
-        error!("Configuration file not found: {:?}", config_path);
         return Err(anyhow!("Configuration file not found: {:?}", config_path));
     }
 
-    info!("Loading configuration...");
-    debug!("Configuration file path: {:?}", config_path);
     let mut config: Config = Config::load(config_path).await?;
     let config_dir: &Path = if let Some(file) = &config.config_dir {
         Path::new(file)
@@ -88,7 +85,37 @@ async fn main() -> Result<()> {
     } else {
         Path::new("/etc/oxlfs")
     };
-    info!("Configuration loaded");
+
+    let file_appender: RollingFileAppender = rolling::daily(&config.log_dir, "oxlfs.log");
+    let (non_blocking_writer, _guard) = tracing_appender::non_blocking(file_appender);
+    tracing_subscriber::registry()
+        .with(if let Some(level) = &config.log_level {
+            match level {
+                LogLevel::Trace => LevelFilter::TRACE,
+                LogLevel::Debug => LevelFilter::DEBUG,
+                LogLevel::Info => LevelFilter::INFO,
+                LogLevel::Warn => LevelFilter::WARN,
+                LogLevel::Error => LevelFilter::ERROR,
+                LogLevel::Off => LevelFilter::OFF,
+            }
+        } else if cfg!(debug_assertions) {
+            LevelFilter::TRACE
+        } else {
+            LevelFilter::INFO
+        })
+        .with(tracing_subscriber::fmt::layer())
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(non_blocking_writer)
+                .with_ansi(false),
+        )
+        .try_init()
+        .expect("Logger initialization failed");
+
+    info!("OxLFS v{}", VERSION);
+    warn!("As this application is a beta version, it may contain many breaking changes.");
+    debug!("Command line arguments: {:?}", matches);
+    debug!("Configuration file path: {:?}", config_path);
     let jwt_secret_stash: String = config.jwt_secret;
     config.jwt_secret = "[MASKED]".to_string();
     debug!("Configuration parameters: {:?}", config);

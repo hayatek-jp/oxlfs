@@ -8,6 +8,29 @@ use serde::Deserialize;
 use tokio::fs::read_to_string;
 use toml;
 
+/// Log level.
+#[derive(Debug, Deserialize)]
+pub(crate) enum LogLevel {
+    #[serde(rename = "trace")]
+    Trace,
+    #[serde(rename = "debug")]
+    Debug,
+    #[serde(rename = "info")]
+    Info,
+    #[serde(rename = "warn")]
+    Warn,
+    #[serde(rename = "error")]
+    Error,
+    #[serde(rename = "off")]
+    Off,
+}
+
+impl Default for LogLevel {
+    fn default() -> Self {
+        Self::Info
+    }
+}
+
 /// Configuration for the application.
 #[derive(Debug, Deserialize)]
 pub(crate) struct Config {
@@ -32,7 +55,7 @@ pub(crate) struct Config {
     /// Log level
     ///
     /// The default value is `info`.
-    pub(crate) log_level: Option<String>,
+    pub(crate) log_level: Option<LogLevel>,
     /// Log directory
     pub(crate) log_dir: String,
     /// Whether to enable health check endpoint (`/`)
