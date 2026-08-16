@@ -21,7 +21,7 @@ use tokio;
 use tokio::fs::{create_dir_all, try_exists};
 use tokio::net::TcpListener;
 use tokio::signal;
-use tracing::{Level, debug, error, info, trace, warn};
+use tracing::{Level, debug, error, info, warn};
 use tracing_subscriber;
 
 use config::Config;
@@ -78,7 +78,7 @@ async fn main() -> Result<()> {
 
     info!("Loading configuration...");
     debug!("Configuration file path: {:?}", config_path);
-    let config: Arc<Config> = Arc::new(Config::load(config_path).await?);
+    let mut config: Config = Config::load(config_path).await?;
     let config_dir: &Path = if let Some(file) = &config.config_dir {
         Path::new(file)
     } else if cfg!(debug_assertions) {
@@ -89,7 +89,10 @@ async fn main() -> Result<()> {
         Path::new("/etc/oxlfs")
     };
     info!("Configuration loaded");
+    let jwt_secret_stash: String = config.jwt_secret;
+    config.jwt_secret = "[MASKED]".to_string();
     debug!("Configuration parameters: {:?}", config);
+    config.jwt_secret = jwt_secret_stash;
     debug!("Configuration directory: {:?}", config_dir);
 
     info!("Loading user database...");
@@ -112,7 +115,7 @@ async fn main() -> Result<()> {
     let upload_endpoint: String = lfs_endpoint.clone() + "/upload";
     let download_endpoint: String = lfs_endpoint.clone() + "/download";
     let state = AppState {
-        config,
+        config: Arc::new(config),
         user_db,
         lfs_endpoint,
     };
