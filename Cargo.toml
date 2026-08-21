@@ -5,7 +5,7 @@ authors = [
     "KATO Hayate <dev@hayatek.jp>"
 ]
 edition = "2024"
-#rust-version = ""
+rust-version = "1.88.0"
 description = "Git LFS server"
 #documentation = ""
 readme = "README.md"

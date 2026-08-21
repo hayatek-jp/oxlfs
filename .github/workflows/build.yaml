@@ -3,43 +3,53 @@ name: Build
 on:
   push:
     paths-ignore:
-      - '.git**'
-      - '**.md'
-      - 'LICENSE'
+    - '.git**'
+    - '**.md'
+    - 'LICENSE'
 
 jobs:
   build:
     name: Build
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
+        exclude:
+        - os: windows-latest
+          feature-tls: tls-openssl
+        os: [ubuntu-latest, windows-latest]
+        rust: [1.88.0, stable]
         feature-crypto: [aws-lc-rs, rust-crypto]
         feature-tls: [tls-openssl, tls-rustls]
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
+    - name: Checkout repository
+      uses: actions/checkout@v7
 
-      - name: Cache Cargo
-        uses: actions/cache@v6
-        with:
-          path: |
-            '~/.cargo'
-            './target'
-          key: cargo-${{ matrix.feature-crypto }}_${{ matrix.feature-tls }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-${{ matrix.feature-crypto }}_${{ matrix.feature-tls }}-
+    - name: Cache Cargo
+      uses: actions/cache@v6
+      with:
+        path: |
+          '~/.cargo'
+          './target'
+        key: ${{ matrix.os }}-cargo-${{ matrix.rust }}_${{ matrix.feature-crypto }}_${{ matrix.feature-tls }}-${{ hashFiles('Cargo.lock') }}
+        restore-keys: ${{ matrix.os }}-cargo-${{ matrix.rust }}_${{ matrix.feature-crypto }}_${{ matrix.feature-tls }}-
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: ${{ matrix.rust }}
 
-      - name: Build project
-        run: |
-          cargo build --no-default-features --features ${{ matrix.feature-crypto }},${{ matrix.feature-tls }}
-          echo version=$(grep -m1 '^version = ' Cargo.toml | sed -e 's/version = //' -e 's/"//g') >> $GITHUB_ENV
-          echo commit=$(echo ${{ github.sha }} | cut -c 1-7) >> $GITHUB_ENV
+    - name: Build project
+      shell: bash
+      run: |
+        cargo build --no-default-features --features ${{ matrix.feature-crypto }},${{ matrix.feature-tls }}
+        echo version=$(git describe --always) >> $GITHUB_ENV
 
-      - name: Archive
-        uses: actions/upload-artifact@v4
-        with:
-          name: 'oxlfs_v${{ env.version }}@${{ env.commit }}_${{ matrix.feature-crypto }}_${{ matrix.feature-tls }}'
-          path: |
-            target/debug/oxlfs
+    - name: Archive
+      uses: actions/upload-artifact@v4
+      with:
+        name: oxlfs_${{ env.version }}_${{ matrix.os }}_${{ matrix.rust }}_${{ matrix.feature-crypto }}_${{ matrix.feature-tls }}
+        path: |
+          target/debug/oxlfs
+          target/debug/oxlfs.exe
+          target/debug/oxlfs_pw
+          target/debug/oxlfs_pw.exe
