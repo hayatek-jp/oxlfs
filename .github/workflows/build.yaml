@@ -11,6 +11,10 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        feature-crypto: [aws-lc-rs, rust-crypto]
+        feature-tls: [tls-openssl, tls-rustls]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -21,21 +25,21 @@ jobs:
           path: |
             '~/.cargo'
             './target'
-          key: cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-
+          key: cargo-${{ matrix.feature-crypto }}_${{ matrix.feature-tls }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ matrix.feature-crypto }}_${{ matrix.feature-tls }}-
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Build project
         run: |
-          cargo build --all-features --workspace
+          cargo build --no-default-features --features ${{ matrix.feature-crypto }},${{ matrix.feature-tls }}
           echo version=$(grep -m1 '^version = ' Cargo.toml | sed -e 's/version = //' -e 's/"//g') >> $GITHUB_ENV
           echo commit=$(echo ${{ github.sha }} | cut -c 1-7) >> $GITHUB_ENV
 
       - name: Archive
         uses: actions/upload-artifact@v4
         with:
-          name: 'oxlfs_v${{ env.version }}@${{ env.commit }}'
+          name: 'oxlfs_v${{ env.version }}@${{ env.commit }}_${{ matrix.feature-crypto }}_${{ matrix.feature-tls }}'
           path: |
             target/debug/oxlfs

@@ -30,6 +30,7 @@ default-run = "oxlfs"
 anyhow = "1.0.104"
 argon2 = { version = "0.5.3", features = ["std"] }
 axum = { version = "0.8.9", features = ["http2"] }
+axum-server = "0.8.0"
 base64 = "0.23.1"
 clap = "4.6.6"
 futures = "0.3.34"
@@ -50,6 +51,8 @@ url = { version = "2.5.8", features = ["serde"] }
 tokio = { version = "1.53.1", features = ["test-util"] }
 
 [features]
-default = ["aws-lc-rs"]
+default = ["aws-lc-rs", "tls-rustls"]
 aws-lc-rs = ["jsonwebtoken/aws_lc_rs"]
 rust-crypto = ["jsonwebtoken/rust_crypto"]
+tls-openssl = ["axum-server/tls-openssl"]
+tls-rustls = ["axum-server/tls-rustls"]

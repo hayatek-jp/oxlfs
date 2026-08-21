@@ -11,6 +11,10 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        feature-crypto: [aws-lc-rs, rust-crypto]
+        feature-tls: [tls-openssl, tls-rustls]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -21,12 +25,12 @@ jobs:
           path: |
             '~/.cargo'
             './target'
-          key: cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-
+          key: cargo-${{ matrix.feature-crypto }}_${{ matrix.feature-tls }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ matrix.feature-crypto }}_${{ matrix.feature-tls }}-
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Run test
         run: |
-          cargo test --all-features --workspace
+          cargo test --no-default-features --features ${{ matrix.feature-crypto }},${{ matrix.feature-tls }}

@@ -9,30 +9,35 @@ mod jwt;
 mod upload;
 mod users;
 
+use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::config::LogLevel;
 use anyhow::{Result, anyhow};
 use axum;
 use axum::Router;
 use axum::routing::{get, post, put};
+use axum_server::Server;
+#[cfg(feature = "tls-openssl")]
+use axum_server::tls_openssl::{OpenSSLAcceptor, OpenSSLConfig};
+#[cfg(feature = "tls-rustls")]
+use axum_server::tls_rustls::{RustlsAcceptor, RustlsConfig};
 use clap::{ArgMatches, Command, arg};
-use config::Config;
 use tokio;
 use tokio::fs::{create_dir_all, try_exists};
 use tokio::net::TcpListener;
 use tokio::signal;
-use tracing::{Level, debug, error, info, warn};
+use tracing::{debug, error, info, warn};
 use tracing_appender;
 use tracing_appender::rolling;
 use tracing_appender::rolling::RollingFileAppender;
 use tracing_subscriber;
 use tracing_subscriber::filter::LevelFilter;
-use tracing_subscriber::fmt::MakeWriter;
-use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
+
+use config::Config;
+use config::LogLevel;
 use users::UserDB;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -154,11 +159,44 @@ async fn main() -> Result<()> {
     if state.config.healthcheck_endpoint.unwrap_or(true) {
         app = app.route("/", get(|| async { "OxLFS is running!" }));
     }
-    let listener: TcpListener = TcpListener::bind(&state.config.listen).await?;
-    info!("Listening on {}", &state.config.listen);
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    if state.config.tls {
+        if state.config.tls_cert.is_none() {
+            return Err(anyhow!("TLS is enabled but cert is missing"));
+        }
+        if state.config.tls_key.is_none() {
+            return Err(anyhow!("TLS is enabled but key is missing"));
+        }
+        if !cfg!(feature = "tls-rustls") && !cfg!(feature = "tls-openssl") {
+            return Err(anyhow!(
+                "TLS is enabled but no TLS implementation is available"
+            ));
+        }
+        #[cfg(feature = "tls-openssl")]
+        let tls_config: OpenSSLConfig = OpenSSLConfig::from_pem_file(
+            state.config.tls_cert.as_ref().unwrap(),
+            state.config.tls_key.as_ref().unwrap(),
+        )?;
+        #[cfg(feature = "tls-rustls")]
+        let tls_config: RustlsConfig = RustlsConfig::from_pem_file(
+            state.config.tls_cert.as_ref().unwrap(),
+            state.config.tls_key.as_ref().unwrap(),
+        )
+            .await?;
+        #[cfg(feature = "tls-openssl")]
+        let server: Server<SocketAddr, OpenSSLAcceptor> =
+            axum_server::bind_openssl(state.config.listen.parse::<SocketAddr>()?, tls_config);
+        #[cfg(feature = "tls-rustls")]
+        let server: Server<SocketAddr, RustlsAcceptor> =
+            axum_server::bind_rustls(state.config.listen.parse::<SocketAddr>()?, tls_config);
+        info!("HTTPS server listening on {}", state.config.listen);
+        server.serve(app.into_make_service()).await?;
+    } else {
+        let listener: TcpListener = TcpListener::bind(&state.config.listen).await?;
+        info!("HTTP server listening on {}", state.config.listen);
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown_signal())
+            .await?;
+    }
     info!("Server stopped");
     Ok(())
 }
