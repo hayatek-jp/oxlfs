@@ -22,8 +22,16 @@ categories = [
     "web-programming::http-server",
 ]
 #exclude = []
-#include = []
-publish = false
+include = [
+    "src/**.rs",
+    "build.rs",
+    "Cargo.toml",
+    "Cargo.lock",
+    "README.md",
+    "README_ja.md",
+    "LICENSE",
+]
+publish = true
 default-run = "oxlfs"
 
 [dependencies]
