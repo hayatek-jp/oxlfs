@@ -16,6 +16,8 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow};
 use axum;
 use axum::Router;
+use axum::extract::ConnectInfo;
+use axum::http::{HeaderValue, Request, header};
 use axum::routing::{get, post, put};
 use axum_server::Server;
 #[cfg(feature = "tls-openssl")]
@@ -27,7 +29,11 @@ use tokio;
 use tokio::fs::{create_dir_all, try_exists};
 use tokio::net::TcpListener;
 use tokio::signal;
-use tracing::{debug, error, info, warn};
+use tower::ServiceBuilder;
+use tower_http::ServiceBuilderExt;
+use tower_http::request_id::{MakeRequestUuid, RequestId};
+use tower_http::trace::TraceLayer;
+use tracing::{Span, debug, error, info, info_span, warn};
 use tracing_appender;
 use tracing_appender::rolling;
 use tracing_appender::rolling::RollingFileAppender;
@@ -146,6 +152,61 @@ async fn main() -> Result<()> {
     let batch_endpoint: String = lfs_endpoint.clone() + "/objects/batch";
     let upload_endpoint: String = lfs_endpoint.clone() + "/upload";
     let download_endpoint: String = lfs_endpoint.clone() + "/download";
+    let access_id_middleware = ServiceBuilder::new()
+        .set_x_request_id(MakeRequestUuid)
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(|request: &Request<_>| {
+                    let request_id = request.extensions().get::<RequestId>().unwrap();
+                    match request_id.header_value().to_str() {
+                        Ok(request_id) => info_span!("http_request", request_id),
+                        Err(_) => info_span!("http_request", request_id = ?request_id),
+                    }
+                })
+                .on_request(|request: &Request<_>, _span: &Span| {
+                    let remote_addr = request
+                        .extensions()
+                        .get::<ConnectInfo<SocketAddr>>()
+                        .map(|ConnectInfo(addr)| *addr);
+                    let empty_header_value = "".parse::<HeaderValue>().unwrap();
+                    let forwarded_for = request
+                        .headers()
+                        .get(header::FORWARDED)
+                        .unwrap_or(
+                            request
+                                .headers()
+                                .get("x-forwarded-for")
+                                .unwrap_or(&empty_header_value),
+                        )
+                        .to_str()
+                        .unwrap();
+                    // TODO: Improve handling for proxied requests
+
+                    match remote_addr {
+                        Some(addr) => {
+                            info!(
+                                "{} {} from {}{}",
+                                request.method(),
+                                request.uri().path(),
+                                addr.ip(),
+                                if !forwarded_for.is_empty() {
+                                    format!(" (forwarded: {})", forwarded_for)
+                                } else {
+                                    String::new()
+                                },
+                            );
+                        }
+                        None => {
+                            info!(
+                                "{} {} from <unknown>",
+                                request.method(),
+                                request.uri().path(),
+                            );
+                        }
+                    }
+                }),
+        )
+        .propagate_x_request_id();
     let state = AppState {
         config: Arc::new(config),
         user_db,
@@ -157,8 +218,9 @@ async fn main() -> Result<()> {
         .route(&download_endpoint, get(download::handle))
         .with_state(state.clone());
     if state.config.healthcheck_endpoint.unwrap_or(true) {
-        app = app.route("/", get(|| async { "OxLFS is running!" }));
+        app = app.route("/", get(|| async { "OxLFS is running!\n" }));
     }
+    app = app.layer(access_id_middleware);
     if state.config.tls {
         if state.config.tls_cert.is_none() {
             return Err(anyhow!("TLS is enabled but cert is missing"));
@@ -181,7 +243,7 @@ async fn main() -> Result<()> {
             state.config.tls_cert.as_ref().unwrap(),
             state.config.tls_key.as_ref().unwrap(),
         )
-            .await?;
+        .await?;
         #[cfg(feature = "tls-openssl")]
         let server: Server<SocketAddr, OpenSSLAcceptor> =
             axum_server::bind_openssl(state.config.listen.parse::<SocketAddr>()?, tls_config);
@@ -189,13 +251,18 @@ async fn main() -> Result<()> {
         let server: Server<SocketAddr, RustlsAcceptor> =
             axum_server::bind_rustls(state.config.listen.parse::<SocketAddr>()?, tls_config);
         info!("HTTPS server listening on {}", state.config.listen);
-        server.serve(app.into_make_service()).await?;
+        server
+            .serve(app.into_make_service_with_connect_info::<SocketAddr>())
+            .await?;
     } else {
         let listener: TcpListener = TcpListener::bind(&state.config.listen).await?;
         info!("HTTP server listening on {}", state.config.listen);
-        axum::serve(listener, app)
-            .with_graceful_shutdown(shutdown_signal())
-            .await?;
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
     }
     info!("Server stopped");
     Ok(())
