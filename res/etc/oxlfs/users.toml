@@ -1,0 +1,11 @@
+[public]
+repos = []
+# repos = ["some/repo"]
+
+# [[users]]
+# name = "admin"
+# password_hash = "argon2id_hash" # oxlfs_pw <password>
+# permissions = [
+#     { repo = "some/*", read = true, write = true },
+#     { repo = "some/repo", read = true, write = false },
+# ]

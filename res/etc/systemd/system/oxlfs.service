@@ -1,0 +1,11 @@
+[Unit]
+Description = Git LFS server written in Rust
+
+[Service]
+ExecStart = /usr/bin/oxlfs
+Restart = always
+KillSignal = SIGINT
+Type = simple
+
+[Install]
+WantedBy = multi-user.target

@@ -1,0 +1,14 @@
+listen = "0.0.0.0:80"
+# listen = "[::0]:80"
+# listen = "0.0.0.0:443"
+# listen = "[::0]:443"
+tls = false
+# tls_cert = "path/to/server.crt"
+# tls_key = "path/to/server.key"
+# git_root = ""
+storage_dir = "/var/lib/oxlfs/repos"
+log_dir = "/var/log/oxlfs"
+# log_level = "info"
+# healthcheck_endpoint = true
+# jwt_secret = "your-secret-key" # e.g. openssl rand -base64 32
+config_dir = "/etc/oxlfs"

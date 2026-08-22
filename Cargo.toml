@@ -66,3 +66,11 @@ aws-lc-rs = ["jsonwebtoken/aws_lc_rs"]
 rust-crypto = ["jsonwebtoken/rust_crypto"]
 tls-openssl = ["axum-server/tls-openssl"]
 tls-rustls = ["axum-server/tls-rustls"]
+
+[package.metadata.deb]
+assets = [
+    "$auto",
+    ["res/etc/oxlfs/config.toml", "/etc/oxlfs/config.toml", "600"],
+    ["res/etc/oxlfs/users.toml", "/etc/oxlfs/users.toml", "600"],
+    ["res/etc/systemd/system/oxlfs.service", "/etc/systemd/system/oxlfs.service", "644"]
+]
