@@ -1,5 +1,10 @@
 # OxLFS
 
+[![Build](https://github.com/hayatek-jp/oxlfs/actions/workflows/build.yaml/badge.svg)](https://github.com/hayatek-jp/oxlfs/actions/workflows/build.yaml)
+[![Test](https://github.com/hayatek-jp/oxlfs/actions/workflows/test.yaml/badge.svg)](https://github.com/hayatek-jp/oxlfs/actions/workflows/test.yaml)
+[![oxlfs at crates.io](https://img.shields.io/crates/v/oxlfs.svg)](https://crates.io/crates/oxlfs)
+[![oxlfs license](https://img.shields.io/crates/l/oxlfs.svg)](https://github.com/hayatek-jp/oxlfs/blob/main/LICENSE)
+
 A Git LFS server written in Rust. OxLFS implements the Git LFS Batch API with
 the basic transfer adapter and stores objects on the local filesystem.
 

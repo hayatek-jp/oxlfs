@@ -1,5 +1,10 @@
 # OxLFS
 
+[![Build](https://github.com/hayatek-jp/oxlfs/actions/workflows/build.yaml/badge.svg)](https://github.com/hayatek-jp/oxlfs/actions/workflows/build.yaml)
+[![Test](https://github.com/hayatek-jp/oxlfs/actions/workflows/test.yaml/badge.svg)](https://github.com/hayatek-jp/oxlfs/actions/workflows/test.yaml)
+[![oxlfs at crates.io](https://img.shields.io/crates/v/oxlfs.svg)](https://crates.io/crates/oxlfs)
+[![oxlfs license](https://img.shields.io/crates/l/oxlfs.svg)](https://github.com/hayatek-jp/oxlfs/blob/main/LICENSE)
+
 Rustで実装されたGit LFSサーバーです。OxLFSはGit LFS Batch APIとBasic転送アダプターに対応しており、オブジェクトをローカルファイルシステムに保存します。
 
 > [!WARNING]
