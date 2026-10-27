@@ -8,7 +8,6 @@ use std::str::Chars;
 use axum::body::Body;
 use axum::extract::Path;
 use axum::extract::State;
-use axum::http::response::Builder;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use time::OffsetDateTime;
@@ -58,44 +57,35 @@ pub(crate) async fn handle(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((user, repo)): Path<(String, String)>,
-    body: Body,
+    _body: Body,
 ) -> Response {
     info!("Download from {}/{}", user, repo);
     trace!("headers: {:#?}", headers);
-    let mut builder: Builder = Response::builder();
     let claims: Claims;
     if let Some(authorization) = headers.get("authorization") {
-        let auth_str = authorization.to_str().unwrap().to_string();
+        let Ok(auth_str) = authorization.to_str() else {
+            return (StatusCode::UNAUTHORIZED, StatusCode::UNAUTHORIZED.as_str()).into_response();
+        };
         let jwt: &str = auth_str.trim_start_matches("Bearer ");
         match jwt::decode(jwt, &state.config.jwt_secret) {
             Ok(c) => claims = c,
             Err(e) => {
-                builder = builder.status(StatusCode::UNAUTHORIZED);
-                return builder
-                    .body(StatusCode::UNAUTHORIZED.as_str().into())
-                    .unwrap();
+                warn!("JWT decode failed: {e}");
+                return (StatusCode::UNAUTHORIZED, StatusCode::UNAUTHORIZED.as_str())
+                    .into_response();
             }
         }
     } else {
-        builder = builder.status(StatusCode::UNAUTHORIZED);
-        return builder
-            .body(StatusCode::UNAUTHORIZED.as_str().into())
-            .unwrap();
+        return (StatusCode::UNAUTHORIZED, StatusCode::UNAUTHORIZED.as_str()).into_response();
     }
     trace!("JWT claims: {:#?}", claims);
     if claims.exp < OffsetDateTime::now_utc() {
         warn!("JWT expired");
-        builder = builder.status(StatusCode::UNAUTHORIZED);
-        return builder
-            .body(StatusCode::UNAUTHORIZED.as_str().into())
-            .unwrap();
+        return (StatusCode::UNAUTHORIZED, StatusCode::UNAUTHORIZED.as_str()).into_response();
     }
     if claims.lfs.action != BatchResponseObjectActionType::Download {
         warn!("Invalid action");
-        builder = builder.status(StatusCode::BAD_REQUEST);
-        return builder
-            .body(StatusCode::BAD_REQUEST.as_str().into())
-            .unwrap();
+        return (StatusCode::BAD_REQUEST, StatusCode::BAD_REQUEST.as_str()).into_response();
     }
     let mut base: PathBuf = PathBuf::new();
     base.push(&state.config.storage_dir);
@@ -103,23 +93,47 @@ pub(crate) async fn handle(
     let object_file: PathBuf = get_object_path(base, &claims.lfs.oid);
     if !object_file.exists() {
         warn!("Requested object not found: {:?}", object_file);
-        builder = builder.status(StatusCode::NOT_FOUND);
-        return builder.body(StatusCode::NOT_FOUND.as_str().into()).unwrap();
+        return (StatusCode::NOT_FOUND, StatusCode::NOT_FOUND.as_str()).into_response();
     }
     trace!("object_file: {:?}", object_file);
-    let file: File = File::open(object_file).await.unwrap();
-    let metadata: Metadata = file.metadata().await.unwrap();
+    let file: File = match File::open(object_file).await {
+        Ok(file) => file,
+        Err(error) => {
+            warn!("Failed to open requested object: {error}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to open object").into_response();
+        }
+    };
+    let metadata: Metadata = match file.metadata().await {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            warn!("Failed to read object metadata: {error}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to read object metadata",
+            )
+                .into_response();
+        }
+    };
 
     let stream: ReaderStream<File> = ReaderStream::new(file);
     let body: Body = Body::from_stream(stream);
 
-    let response: Response = builder
+    let response: Response = axum::http::Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/octet-stream")
         .header(header::CONTENT_LENGTH, metadata.len())
         .body(body)
-        .unwrap()
-        .into_response();
+        .map_or_else(
+            |error| {
+                warn!("Failed to build download response: {error}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to build response",
+                )
+                    .into_response()
+            },
+            IntoResponse::into_response,
+        );
     info!("Generated response for download request");
     response
 }

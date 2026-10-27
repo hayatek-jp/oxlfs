@@ -8,7 +8,7 @@ use std::str::{Chars, SplitWhitespace};
 use anyhow::{Result, anyhow};
 use axum::Json;
 use axum::extract::{Path as AxPath, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as base64;
 use futures::future::join_all;
@@ -194,6 +194,14 @@ fn validate_accept(headers: &HeaderMap) -> bool {
         })
 }
 
+fn content_type_headers() -> HeaderMap {
+    HeaderMap::from_iter([(header::CONTENT_TYPE, HeaderValue::from_static(CONTENT_TYPE))])
+}
+
+fn basic_auth_header() -> HeaderValue {
+    HeaderValue::from_static("Basic realm=\"Git LFS\"")
+}
+
 /// Constructs a full file system path to a specific object within a base directory
 /// using an object ID (OID). The OID is used to create a directory structure and
 /// filename.
@@ -241,13 +249,12 @@ fn get_object_path(base: &Path, oid: &str) -> PathBuf {
 ///
 /// ## Returns
 ///
-/// - `true` if the file corresponding to the OID exists in the expected
+/// - `Ok(true)` if the file corresponding to the OID exists in the expected
 ///   directory structure under the given base directory.
-/// - `false` otherwise.
-async fn is_object_exists(base: &Path, oid: &str) -> bool {
-    try_exists(&get_object_path(base, oid))
-        .await
-        .unwrap_or(false)
+/// - `Ok(false)` if the file does not exist.
+/// - `Err` if checking the file system fails.
+async fn is_object_exists(base: &Path, oid: &str) -> std::io::Result<bool> {
+    try_exists(&get_object_path(base, oid)).await
 }
 
 /// Validates if a given string is a valid SHA-256 hash.
@@ -335,7 +342,10 @@ async fn authenticate<'a>(user_db: &'a UserDB, headers: &HeaderMap) -> Result<&'
             return Err(anyhow!("Invalid authorization credential"));
         }
     }
-    Ok(user_db.users.get("anonymous").unwrap())
+    user_db
+        .users
+        .get("anonymous")
+        .ok_or_else(|| anyhow!("Anonymous user is not configured"))
 }
 
 /// Handles LFS batch API requests.
@@ -350,7 +360,7 @@ pub(crate) async fn handle(
         warn!("Invalid content-type: {:?}", headers.get("content-type"));
         return (
             StatusCode::BAD_REQUEST,
-            HeaderMap::from_iter([(header::CONTENT_TYPE, CONTENT_TYPE.parse().unwrap())]),
+            content_type_headers(),
             Json(json!({
                 "message": "Invalid Content-Type",
                 // TODO: Add `documentation_url` and `request_id`
@@ -361,7 +371,7 @@ pub(crate) async fn handle(
         warn!("Invalid accept: {:?}", headers.get("accept"));
         return (
             StatusCode::NOT_ACCEPTABLE,
-            HeaderMap::from_iter([(header::CONTENT_TYPE, CONTENT_TYPE.parse().unwrap())]),
+            content_type_headers(),
             Json(json!({
                 "message": format!("Accept header should be {}", CONTENT_TYPE),
                 // TODO: Add `documentation_url` and `request_id`
@@ -372,6 +382,20 @@ pub(crate) async fn handle(
     let mut base_path: PathBuf = PathBuf::new();
     base_path.push(&state.config.storage_dir);
     base_path.push(format!("{}/{}/objects", user, repo));
+    let host = match headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+    {
+        Some(host) => host,
+        None => {
+            warn!("Missing or invalid Host header");
+            return (
+                StatusCode::BAD_REQUEST,
+                content_type_headers(),
+                Json(json!({"message": "Missing or invalid Host header"})),
+            );
+        }
+    };
     let auth_user: &User;
     match authenticate(&state.user_db, &headers).await {
         Ok(user) => auth_user = user,
@@ -379,7 +403,7 @@ pub(crate) async fn handle(
             warn!("Authentication error: {}", e);
             return (
                 StatusCode::UNAUTHORIZED,
-                HeaderMap::from_iter([(header::CONTENT_TYPE, CONTENT_TYPE.parse().unwrap())]),
+                content_type_headers(),
                 Json(json!({
                     "message": "Authentication error",
                     // TODO: Add `documentation_url` and `request_id`
@@ -401,11 +425,8 @@ pub(crate) async fn handle(
                 return (
                     StatusCode::UNAUTHORIZED,
                     HeaderMap::from_iter([
-                        (header::CONTENT_TYPE, CONTENT_TYPE.parse().unwrap()),
-                        (
-                            header::WWW_AUTHENTICATE,
-                            "Basic realm=\"Git LFS\"".parse().unwrap(),
-                        ),
+                        (header::CONTENT_TYPE, HeaderValue::from_static(CONTENT_TYPE)),
+                        (header::WWW_AUTHENTICATE, basic_auth_header()),
                     ]),
                     Json(json!({
                         "message": "Authentication error",
@@ -416,7 +437,7 @@ pub(crate) async fn handle(
             if let Some(permission) = auth_user.permissions.get(&format!(
                 "{}/{}",
                 user,
-                repo.strip_suffix(".git").unwrap()
+                repo.strip_suffix(".git").unwrap_or(&repo)
             )) {
                 if !permission.write {
                     warn!(
@@ -427,7 +448,7 @@ pub(crate) async fn handle(
                         StatusCode::FORBIDDEN,
                         HeaderMap::from_iter([(
                             header::CONTENT_TYPE,
-                            CONTENT_TYPE.parse().unwrap(),
+                            HeaderValue::from_static(CONTENT_TYPE),
                         )]),
                         Json(json!({
                             "message": format!("You do not have a write permission to {}", permission.repo),
@@ -449,7 +470,7 @@ pub(crate) async fn handle(
                         StatusCode::FORBIDDEN,
                         HeaderMap::from_iter([(
                             header::CONTENT_TYPE,
-                            CONTENT_TYPE.parse().unwrap(),
+                            HeaderValue::from_static(CONTENT_TYPE),
                         )]),
                         Json(json!({
                             "message": format!("You do not have a write permission to {}", permission.repo),
@@ -468,7 +489,7 @@ pub(crate) async fn handle(
                 );
                 return (
                     StatusCode::NOT_FOUND,
-                    HeaderMap::from_iter([(header::CONTENT_TYPE, CONTENT_TYPE.parse().unwrap())]),
+                    content_type_headers(),
                     Json(json!({
                         "message": "Repository not found",
                         // TODO: Add `documentation_url` and `request_id`
@@ -481,7 +502,7 @@ pub(crate) async fn handle(
                 warn!("Client does not support basic transfer adapter");
                 return (
                     StatusCode::NOT_ACCEPTABLE,
-                    HeaderMap::from_iter([(header::CONTENT_TYPE, CONTENT_TYPE.parse().unwrap())]),
+                    content_type_headers(),
                     Json(json!({
                         "message": "Unacceptable transfer adapters"
                     })),
@@ -509,7 +530,21 @@ pub(crate) async fn handle(
                         BatchResponseObjectActionType,
                         BatchResponseObjectAction,
                     > = HashMap::new();
-                    if !is_object_exists(&base_path, &o.oid).await {
+                    let object_exists = match is_object_exists(&base_path, &o.oid).await {
+                        Ok(exists) => exists,
+                        Err(error) => {
+                            warn!("Failed to check object existence: {error}");
+                            return BatchResponseObject::Err {
+                                oid: o.oid.clone(),
+                                size: o.size,
+                                error: BatchResponseObjectError {
+                                    code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                                    message: "Failed to check object existence".to_string(),
+                                },
+                            };
+                        }
+                    };
+                    if !object_exists {
                         let claims = Claims {
                             exp: expires_at,
                             iat: now,
@@ -524,25 +559,52 @@ pub(crate) async fn handle(
                                 action: BatchResponseObjectActionType::Upload,
                             },
                         };
-                        let jwt: String = jwt::encode(claims, &state.config.jwt_secret).unwrap();
+                        let jwt: String = match jwt::encode(claims, &state.config.jwt_secret) {
+                            Ok(jwt) => jwt,
+                            Err(error) => {
+                                warn!("Failed to create upload token: {error}");
+                                return BatchResponseObject::Err {
+                                    oid: o.oid.clone(),
+                                    size: o.size,
+                                    error: BatchResponseObjectError {
+                                        code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                                        message: "Failed to create upload action".to_string(),
+                                    },
+                                };
+                            }
+                        };
                         let header: HashMap<String, String> = HashMap::from_iter([(
                             header::AUTHORIZATION.to_string(),
                             format!("Bearer {}", jwt),
                         )]);
+                        let href: Url = match format!(
+                            "http{}://{}{}/upload",
+                            if state.config.tls { "s" } else { "" },
+                            host,
+                            state.lfs_endpoint,
+                        )
+                        .replacen("{user}", &user, 1)
+                        .replacen("{repo}", &repo, 1)
+                        .parse()
+                        {
+                            Ok(href) => href,
+                            Err(error) => {
+                                warn!("Failed to build upload URL: {error}");
+                                return BatchResponseObject::Err {
+                                    oid: o.oid.clone(),
+                                    size: o.size,
+                                    error: BatchResponseObjectError {
+                                        code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                                        message: "Failed to create upload action".to_string(),
+                                    },
+                                };
+                            }
+                        };
                         // TODO: Support verify action
                         actions.insert(
                             BatchResponseObjectActionType::Upload,
                             BatchResponseObjectAction {
-                                href: format!(
-                                    "http{}://{}{}/upload",
-                                    if state.config.tls { "s" } else { "" },
-                                    headers.get("host").unwrap().to_str().unwrap(),
-                                    state.lfs_endpoint,
-                                )
-                                .replacen("{user}", &user, 1)
-                                .replacen("{repo}", &repo, 1)
-                                .parse()
-                                .unwrap(),
+                                href,
                                 header,
                                 expires_at,
                             },
@@ -561,8 +623,18 @@ pub(crate) async fn handle(
             info!("Successfully generated response for batch upload request");
             (
                 StatusCode::OK,
-                HeaderMap::from_iter([(header::CONTENT_TYPE, CONTENT_TYPE.parse().unwrap())]),
-                Json(serde_json::to_value(response).unwrap()),
+                content_type_headers(),
+                Json(match serde_json::to_value(response) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        warn!("Failed to serialize batch upload response: {error}");
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            content_type_headers(),
+                            Json(json!({"message": "Internal server error"})),
+                        );
+                    }
+                }),
             )
         }
         Operation::Download => {
@@ -573,7 +645,7 @@ pub(crate) async fn handle(
             if let Some(permission) = auth_user.permissions.get(&format!(
                 "{}/{}",
                 user,
-                repo.strip_suffix(".git").unwrap()
+                repo.strip_suffix(".git").unwrap_or(&repo)
             )) {
                 if !permission.read {
                     warn!(
@@ -584,11 +656,8 @@ pub(crate) async fn handle(
                         return (
                             StatusCode::UNAUTHORIZED,
                             HeaderMap::from_iter([
-                                (header::CONTENT_TYPE, CONTENT_TYPE.parse().unwrap()),
-                                (
-                                    header::WWW_AUTHENTICATE,
-                                    "Basic realm=\"Git LFS\"".parse().unwrap(),
-                                ),
+                                (header::CONTENT_TYPE, HeaderValue::from_static(CONTENT_TYPE)),
+                                (header::WWW_AUTHENTICATE, basic_auth_header()),
                             ]),
                             Json(json!({
                                 "message": "Authentication error",
@@ -600,7 +669,7 @@ pub(crate) async fn handle(
                         StatusCode::NOT_FOUND,
                         HeaderMap::from_iter([(
                             header::CONTENT_TYPE,
-                            CONTENT_TYPE.parse().unwrap(),
+                            HeaderValue::from_static(CONTENT_TYPE),
                         )]),
                         Json(json!({
                             "message": "Repository not found",
@@ -622,11 +691,8 @@ pub(crate) async fn handle(
                         return (
                             StatusCode::UNAUTHORIZED,
                             HeaderMap::from_iter([
-                                (header::CONTENT_TYPE, CONTENT_TYPE.parse().unwrap()),
-                                (
-                                    header::WWW_AUTHENTICATE,
-                                    "Basic realm=\"Git LFS\"".parse().unwrap(),
-                                ),
+                                (header::CONTENT_TYPE, HeaderValue::from_static(CONTENT_TYPE)),
+                                (header::WWW_AUTHENTICATE, basic_auth_header()),
                             ]),
                             Json(json!({
                                 "message": "Authentication error",
@@ -638,7 +704,7 @@ pub(crate) async fn handle(
                         StatusCode::NOT_FOUND,
                         HeaderMap::from_iter([(
                             header::CONTENT_TYPE,
-                            CONTENT_TYPE.parse().unwrap(),
+                            HeaderValue::from_static(CONTENT_TYPE),
                         )]),
                         Json(json!({
                             "message": "Repository not found",
@@ -659,11 +725,8 @@ pub(crate) async fn handle(
                     return (
                         StatusCode::UNAUTHORIZED,
                         HeaderMap::from_iter([
-                            (header::CONTENT_TYPE, CONTENT_TYPE.parse().unwrap()),
-                            (
-                                header::WWW_AUTHENTICATE,
-                                "Basic realm=\"Git LFS\"".parse().unwrap(),
-                            ),
+                            (header::CONTENT_TYPE, HeaderValue::from_static(CONTENT_TYPE)),
+                            (header::WWW_AUTHENTICATE, basic_auth_header()),
                         ]),
                         Json(json!({
                             "message": "Authentication error",
@@ -673,7 +736,7 @@ pub(crate) async fn handle(
                 }
                 return (
                     StatusCode::NOT_FOUND,
-                    HeaderMap::from_iter([(header::CONTENT_TYPE, CONTENT_TYPE.parse().unwrap())]),
+                    content_type_headers(),
                     Json(json!({
                         "message": "Repository not found",
                         // TODO: Add `documentation_url` and `request_id`
@@ -686,7 +749,7 @@ pub(crate) async fn handle(
                 warn!("Client does not support basic transfer adapter");
                 return (
                     StatusCode::NOT_ACCEPTABLE,
-                    HeaderMap::from_iter([(header::CONTENT_TYPE, CONTENT_TYPE.parse().unwrap())]),
+                    content_type_headers(),
                     Json(json!({
                         "message": "Unacceptable transfer adapters"
                     })),
@@ -715,7 +778,21 @@ pub(crate) async fn handle(
                     // TODO: Authentication
                     let object_path: PathBuf = get_object_path(&base_path, &o.oid);
                     // TODO: Check object size
-                    if try_exists(&object_path).await.unwrap_or(false) {
+                    let object_exists = match try_exists(&object_path).await {
+                        Ok(exists) => exists,
+                        Err(error) => {
+                            warn!("Failed to check object existence: {error}");
+                            return BatchResponseObject::Err {
+                                oid: o.oid.clone(),
+                                size: o.size,
+                                error: BatchResponseObjectError {
+                                    code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                                    message: "Failed to check object existence".to_string(),
+                                },
+                            };
+                        }
+                    };
+                    if object_exists {
                         let claims = Claims {
                             exp: expires_at,
                             iat: now,
@@ -730,24 +807,51 @@ pub(crate) async fn handle(
                                 action: BatchResponseObjectActionType::Download,
                             },
                         };
-                        let jwt: String = jwt::encode(claims, &state.config.jwt_secret).unwrap();
+                        let jwt: String = match jwt::encode(claims, &state.config.jwt_secret) {
+                            Ok(jwt) => jwt,
+                            Err(error) => {
+                                warn!("Failed to create download token: {error}");
+                                return BatchResponseObject::Err {
+                                    oid: o.oid.clone(),
+                                    size: o.size,
+                                    error: BatchResponseObjectError {
+                                        code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                                        message: "Failed to create download action".to_string(),
+                                    },
+                                };
+                            }
+                        };
                         let header: HashMap<String, String> = HashMap::from_iter([(
                             header::AUTHORIZATION.to_string(),
                             format!("Bearer {}", jwt),
                         )]);
+                        let href: Url = match format!(
+                            "http{}://{}{}/download",
+                            if state.config.tls { "s" } else { "" },
+                            host,
+                            state.lfs_endpoint,
+                        )
+                        .replacen("{user}", &user, 1)
+                        .replacen("{repo}", &repo, 1)
+                        .parse()
+                        {
+                            Ok(href) => href,
+                            Err(error) => {
+                                warn!("Failed to build download URL: {error}");
+                                return BatchResponseObject::Err {
+                                    oid: o.oid.clone(),
+                                    size: o.size,
+                                    error: BatchResponseObjectError {
+                                        code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                                        message: "Failed to create download action".to_string(),
+                                    },
+                                };
+                            }
+                        };
                         actions.insert(
                             BatchResponseObjectActionType::Download,
                             BatchResponseObjectAction {
-                                href: format!(
-                                    "http{}://{}{}/download",
-                                    if state.config.tls { "s" } else { "" },
-                                    headers.get("host").unwrap().to_str().unwrap(),
-                                    state.lfs_endpoint,
-                                )
-                                .replacen("{user}", &user, 1)
-                                .replacen("{repo}", &repo, 1)
-                                .parse()
-                                .unwrap(),
+                                href,
                                 header,
                                 expires_at,
                             },
@@ -776,8 +880,18 @@ pub(crate) async fn handle(
             info!("Successfully generated response for batch download request");
             (
                 StatusCode::OK,
-                HeaderMap::from_iter([(header::CONTENT_TYPE, CONTENT_TYPE.parse().unwrap())]),
-                Json(serde_json::to_value(response).unwrap()),
+                content_type_headers(),
+                Json(match serde_json::to_value(response) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        warn!("Failed to serialize batch download response: {error}");
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            content_type_headers(),
+                            Json(json!({"message": "Internal server error"})),
+                        );
+                    }
+                }),
             )
         }
     }

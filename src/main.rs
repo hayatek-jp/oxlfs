@@ -120,8 +120,7 @@ async fn main() -> Result<()> {
                 .with_writer(non_blocking_writer)
                 .with_ansi(false),
         )
-        .try_init()
-        .expect("Logger initialization failed");
+        .try_init()?;
 
     info!("OxLFS v{}", VERSION);
     warn!("As this application is a beta version, it may contain many breaking changes.");
@@ -157,7 +156,9 @@ async fn main() -> Result<()> {
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(|request: &Request<_>| {
-                    let request_id = request.extensions().get::<RequestId>().unwrap();
+                    let Some(request_id) = request.extensions().get::<RequestId>() else {
+                        return info_span!("http_request", request_id = "missing");
+                    };
                     match request_id.header_value().to_str() {
                         Ok(request_id) => info_span!("http_request", request_id),
                         Err(_) => info_span!("http_request", request_id = ?request_id),
@@ -168,18 +169,15 @@ async fn main() -> Result<()> {
                         .extensions()
                         .get::<ConnectInfo<SocketAddr>>()
                         .map(|ConnectInfo(addr)| *addr);
-                    let empty_header_value = "".parse::<HeaderValue>().unwrap();
                     let forwarded_for = request
                         .headers()
                         .get(header::FORWARDED)
-                        .unwrap_or(
-                            request
-                                .headers()
-                                .get("x-forwarded-for")
-                                .unwrap_or(&empty_header_value),
-                        )
+                        .unwrap_or(request.headers().get("x-forwarded-for").unwrap_or_else(|| {
+                            static EMPTY_HEADER_VALUE: HeaderValue = HeaderValue::from_static("");
+                            &EMPTY_HEADER_VALUE
+                        }))
                         .to_str()
-                        .unwrap();
+                        .unwrap_or("<invalid>");
                     // TODO: Improve handling for proxied requests
 
                     match remote_addr {
@@ -235,13 +233,29 @@ async fn main() -> Result<()> {
         }
         #[cfg(feature = "tls-openssl")]
         let tls_config: OpenSSLConfig = OpenSSLConfig::from_pem_file(
-            state.config.tls_cert.as_ref().unwrap(),
-            state.config.tls_key.as_ref().unwrap(),
+            state
+                .config
+                .tls_cert
+                .as_deref()
+                .ok_or_else(|| anyhow!("TLS certificate is missing"))?,
+            state
+                .config
+                .tls_key
+                .as_deref()
+                .ok_or_else(|| anyhow!("TLS key is missing"))?,
         )?;
         #[cfg(feature = "tls-rustls")]
         let tls_config: RustlsConfig = RustlsConfig::from_pem_file(
-            state.config.tls_cert.as_ref().unwrap(),
-            state.config.tls_key.as_ref().unwrap(),
+            state
+                .config
+                .tls_cert
+                .as_deref()
+                .ok_or_else(|| anyhow!("TLS certificate is missing"))?,
+            state
+                .config
+                .tls_key
+                .as_deref()
+                .ok_or_else(|| anyhow!("TLS key is missing"))?,
         )
         .await?;
         #[cfg(feature = "tls-openssl")]

@@ -138,11 +138,16 @@ pub(crate) async fn handle(
     trace!("headers: {:#?}", headers);
     let claims: Claims;
     if let Some(authorization) = headers.get("authorization") {
-        let auth_str = authorization.to_str().unwrap().to_string();
+        let Ok(auth_str) = authorization.to_str() else {
+            return StatusCode::UNAUTHORIZED;
+        };
         let jwt: &str = auth_str.trim_start_matches("Bearer ");
         match jwt::decode(jwt, &state.config.jwt_secret) {
             Ok(c) => claims = c,
-            Err(e) => return StatusCode::UNAUTHORIZED,
+            Err(e) => {
+                warn!("JWT decode failed: {e}");
+                return StatusCode::UNAUTHORIZED;
+            }
         }
     } else {
         return StatusCode::UNAUTHORIZED;
@@ -160,16 +165,28 @@ pub(crate) async fn handle(
     let mut path: PathBuf = PathBuf::new();
     path.push(&state.config.storage_dir);
     path.push(format!("{}/{}/objects", user, repo));
-    path = get_object_file_path(path, &claims.lfs.oid).await.unwrap();
+    path = match get_object_file_path(path, &claims.lfs.oid).await {
+        Ok(path) => path,
+        Err(error) => {
+            warn!("Failed to prepare object path: {error}");
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        }
+    };
     debug!("path: {:?}", path);
 
     let mut tmp_path: PathBuf = path.clone();
     tmp_path.set_extension("tmp");
     debug!("tmp_path: {:?}", tmp_path);
     let stream: BodyDataStream = body.into_data_stream();
-    stream_to_file(&tmp_path, stream).await.unwrap();
+    if let Err((status, error)) = stream_to_file(&tmp_path, stream).await {
+        warn!("Failed to store uploaded object: {error}");
+        return status;
+    }
     // TODO: Check the checksum of the uploaded file
-    rename(&tmp_path, &path).await.unwrap();
+    if let Err(error) = rename(&tmp_path, &path).await {
+        warn!("Failed to finalize uploaded object: {error}");
+        return StatusCode::INTERNAL_SERVER_ERROR;
+    }
 
     info!("Upload complete, oid {}", claims.lfs.oid);
     StatusCode::OK
